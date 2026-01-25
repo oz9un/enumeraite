@@ -36,6 +36,25 @@
 
 ---
 
+## 📺 DEFCON 33 Talk - AI-Powered Enumeration
+
+<p align="center">
+  <strong>Watch the research presentation from DEFCON 33 Recon Village</strong>
+</p>
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=IzsBS_E2RVY">
+    <img src="https://img.youtube.com/vi/IzsBS_E2RVY/maxresdefault.jpg" alt="DEFCON 33 Talk - Enumeraite: AI-Powered Web Attack Surface Enumeration" width="600"/>
+  </a>
+</p>
+
+<p align="center">
+  <em>Click to watch: "Enumeraite: AI-Powered Web Attack Surface Enumeration"</em><br/>
+  <strong>Presented by Özgün Kültekin at DEFCON 33 Recon Village</strong>
+</p>
+
+---
+
 ## Features
 
 ### Two Modes of Operation
