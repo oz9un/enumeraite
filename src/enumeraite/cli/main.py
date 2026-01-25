@@ -87,7 +87,7 @@ class EnumeraiteGroup(click.Group):
 
 
 @click.group(cls=EnumeraiteGroup, invoke_without_command=True)
-@click.version_option(version='0.1.1', prog_name='enumeraite')
+@click.version_option(version='0.1.2', prog_name='enumeraite')
 @click.pass_context
 def cli(ctx):
     """AI-powered enumeration for security professionals.

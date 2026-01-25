@@ -64,7 +64,19 @@ class ProviderFactory:
         """
         if provider_name not in self._registry:
             available = ", ".join(self._registry.keys())
-            raise ValueError(f"Unknown provider '{provider_name}'. Available: {available}")
+
+            # Provide installation instructions for missing providers
+            install_msg = ""
+            if provider_name == "openai":
+                install_msg = "\n\nTo install OpenAI support:\n  pip install \"enumeraite[openai]\""
+            elif provider_name == "claude":
+                install_msg = "\n\nTo install Claude support:\n  pip install \"enumeraite[claude]\""
+            elif provider_name in ["anthropic"]:
+                install_msg = "\n\nTo install Claude support:\n  pip install \"enumeraite[claude]\""
+            else:
+                install_msg = "\n\nTo install all providers:\n  pip install \"enumeraite[all]\""
+
+            raise ValueError(f"Provider '{provider_name}' not available. Available: {available}{install_msg}")
 
         provider_config = self.config.get_provider_config(provider_name)
         if not provider_config:
