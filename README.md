@@ -82,12 +82,49 @@
 
 ## Quick Start
 
+### 30-Second Start
+
+```bash
+# Install enumeraite
+pip install "enumeraite[claude]"
+
+# Set API key
+export ANTHROPIC_API_KEY='your-key-here'
+
+# Create sample paths file
+echo -e "/api/users\n/api/auth/login\n/admin/dashboard" > paths.txt
+
+# Generate intelligent variants
+enumeraite generate path --input paths.txt --count 20
+```
+
 ### Installation
 
+**Option 1: PyPI (Recommended)**
+```bash
+pip install enumeraite
+```
+
+**Option 2: From Source (Development)**
 ```bash
 git clone https://github.com/oz9un/enumeraite.git
 cd enumeraite
 pip install -e .
+```
+
+**Optional Provider Dependencies:**
+```bash
+# For Claude support
+pip install "enumeraite[claude]"
+
+# For OpenAI support
+pip install "enumeraite[openai]"
+
+# For HuggingFace support
+pip install "enumeraite[huggingface]"
+
+# Install all providers
+pip install "enumeraite[all]"
 ```
 
 ### Setup
