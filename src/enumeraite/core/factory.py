@@ -43,6 +43,13 @@ class ProviderFactory:
             # Claude provider not available (missing dependencies)
             pass
 
+        try:
+            from ..providers.huggingface_provider import HuggingFaceProvider
+            self.register_provider("huggingface", HuggingFaceProvider)
+        except ImportError:
+            # HuggingFace provider not available (missing dependencies)
+            pass
+
     def create_provider(self, provider_name: str) -> BaseProvider:
         """Create a provider instance.
 
@@ -61,7 +68,23 @@ class ProviderFactory:
 
         provider_config = self.config.get_provider_config(provider_name)
         if not provider_config:
-            raise ValueError(f"No configuration found for provider '{provider_name}'")
+            # Provide helpful setup instructions for each provider
+            if provider_name == "claude":
+                raise ValueError(
+                    f"Claude provider not configured. Please set up:\n"
+                    f"  export ANTHROPIC_API_KEY='your-api-key-here'\n"
+                    f"  Or create enumeraite.json with your Claude API key.\n"
+                    f"  Get API key: https://console.anthropic.com/"
+                )
+            elif provider_name == "openai":
+                raise ValueError(
+                    f"OpenAI provider not configured. Please set up:\n"
+                    f"  export OPENAI_API_KEY='your-api-key-here'\n"
+                    f"  Or create enumeraite.json with your OpenAI API key.\n"
+                    f"  Get API key: https://platform.openai.com/api-keys"
+                )
+            else:
+                raise ValueError(f"No configuration found for provider '{provider_name}'")
 
         provider_class = self._registry[provider_name]
         return provider_class(provider_config)
@@ -95,5 +118,11 @@ class ProviderFactory:
         if default_name in available:
             return self.create_provider(default_name)
 
-        # Fall back to first available
+        # Intelligent fallback: prioritize quality models
+        priority_order = ["claude", "openai", "huggingface"]
+        for provider_name in priority_order:
+            if provider_name in available:
+                return self.create_provider(provider_name)
+
+        # If none of the priority providers available, use first available
         return self.create_provider(available[0])

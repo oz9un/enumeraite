@@ -1,6 +1,6 @@
 """Base provider interface for AI path generation."""
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .models import GenerationResult
 
 class BaseProvider(ABC):
@@ -15,13 +15,15 @@ class BaseProvider(ABC):
         self.config = config
 
     @abstractmethod
-    def generate_paths(self, known_paths: List[str], target: str, count: int) -> GenerationResult:
+    def generate_paths(self, known_paths: List[str], target: str, count: int, max_depth: int = None, strategy: Optional['PromptStrategy'] = None) -> GenerationResult:
         """Generate new API paths based on known paths.
 
         Args:
             known_paths: List of known API paths to learn from
             target: Target domain name
             count: Number of paths to generate
+            max_depth: Optional maximum depth for generated paths (e.g., 3 for /api/users/123)
+            strategy: Optional prompt strategy for discovery type (paths, subdomains, etc.)
 
         Returns:
             GenerationResult containing generated paths and confidence scores

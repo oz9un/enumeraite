@@ -1,0 +1,1 @@
+"""Integration tests for Enumeraite CLI and end-to-end functionality."""

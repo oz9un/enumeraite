@@ -85,7 +85,17 @@ def load_config(config_path: Optional[str] = None) -> Config:
     if os.getenv("ANTHROPIC_API_KEY"):
         config_dict.setdefault("providers", {})["claude"] = {
             "api_key": os.getenv("ANTHROPIC_API_KEY"),
-            "model": os.getenv("CLAUDE_MODEL", "claude-3-sonnet-20240229")
+            "model": os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4")
+        }
+
+    # HuggingFace configuration (no API key needed for public models)
+    hf_model = os.getenv("HUGGINGFACE_MODEL")
+    if hf_model or True:  # Always available
+        config_dict.setdefault("providers", {})["huggingface"] = {
+            "model": hf_model or "enumeraite/Enumeraite-x-Qwen3-4B-Subdomain",
+            "device": os.getenv("HUGGINGFACE_DEVICE", "auto"),
+            "max_length": int(os.getenv("HUGGINGFACE_MAX_LENGTH", "512")),
+            "temperature": float(os.getenv("HUGGINGFACE_TEMPERATURE", "0.7"))
         }
 
     return Config.from_dict(config_dict)
@@ -108,7 +118,13 @@ def create_default_config(output_path: str = "enumeraite.json") -> None:
             },
             "claude": {
                 "api_key": "your-anthropic-api-key-here",
-                "model": "claude-3-sonnet-20240229"
+                "model": "anthropic/claude-sonnet-4"
+            },
+            "huggingface": {
+                "model": "enumeraite/Enumeraite-x-Qwen3-4B-Subdomain",
+                "device": "auto",
+                "max_length": 512,
+                "temperature": 0.7
             }
         }
     }

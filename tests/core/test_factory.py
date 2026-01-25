@@ -24,7 +24,7 @@ def test_create_claude_provider():
     """Test creating Claude provider."""
     config = Config.from_dict({
         "providers": {
-            "claude": {"api_key": "claude-key", "model": "claude-3-sonnet-20240229"}
+            "claude": {"api_key": "claude-key", "model": "anthropic/claude-sonnet-4"}
         }
     })
 

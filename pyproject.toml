@@ -5,16 +5,67 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "enumeraite"
 version = "0.1.0"
-description = "AI-Assisted Web Attack Surface Enumeration"
+description = "AI-Powered Web Attack Surface Enumeration - The future of intelligent discovery"
 authors = [{name = "Özgün Kültekin", email = "ozgun@enumeraite.com"}]
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.9"
+keywords = [
+    "enumeration", "security", "ai", "pentesting", "bug-bounty",
+    "subdomain-enumeration", "path-discovery", "attack-surface",
+    "reconnaissance", "cybersecurity"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Internet :: WWW/HTTP",
+    "Operating System :: OS Independent",
+]
+
+# Core dependencies - minimal installation
 dependencies = [
     "click>=8.0.0",
     "aiohttp>=3.8.0",
     "pydantic>=2.0.0",
-    "openai>=1.0.0",
+]
+
+[project.urls]
+"Homepage" = "https://enumeraite.com"
+"Documentation" = "https://enumeraite.com"
+"Repository" = "https://github.com/oz9un/enumeraite"
+"Bug Reports" = "https://github.com/oz9un/enumeraite/issues"
+"Funding" = "https://github.com/sponsors/oz9un"
+
+[project.optional-dependencies]
+# AI Providers - install separately based on needs
+claude = ["anthropic>=0.7.0"]
+openai = ["openai>=1.0.0"]
+huggingface = ["transformers>=4.30.0", "torch>=2.0.0"]
+
+# All providers
+all = [
     "anthropic>=0.7.0",
+    "openai>=1.0.0",
+    "transformers>=4.30.0",
+    "torch>=2.0.0"
+]
+
+# Development dependencies
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.5.0",
 ]
 
 [project.scripts]

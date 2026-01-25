@@ -1,0 +1,45 @@
+# Sample API paths for Enumeraite testing
+# This file contains common API endpoints that can be used as seed data
+
+# User Management
+/api/users
+/api/users/profile
+/api/users/settings
+/api/auth/login
+/api/auth/logout
+/api/auth/register
+/api/auth/reset-password
+
+# Admin Functions
+/admin/dashboard
+/admin/users
+/admin/settings
+/admin/reports
+/admin/logs
+
+# API Operations
+/api/data/export
+/api/data/import
+/api/search
+/api/notifications
+/api/files/upload
+/api/files/download
+
+# Health and Status
+/health
+/status
+/api/health
+/api/status
+/metrics
+
+# Documentation
+/docs
+/api/docs
+/swagger
+/api-docs
+/openapi.json
+
+# Legacy Endpoints
+/legacy/api/users
+/v1/api/users
+/v2/api/users
