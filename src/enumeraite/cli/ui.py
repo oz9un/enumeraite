@@ -47,7 +47,7 @@ def print_logo():
 """
     click.echo(click.style(logo, fg=Colors.BRIGHT_RED), err=True)
     click.echo(click.style("  enumeraite ", fg=Colors.BRIGHT_RED, bold=True) + 
-               click.style("v0.1.3", fg=Colors.RED), err=True)
+               click.style("v0.1.4", fg=Colors.RED), err=True)
     click.echo(err=True)
 
 
@@ -111,7 +111,9 @@ def print_generation_start(count: int, provider: str, mode: str) -> None:
 
 
 def print_results(items: List[str], output_file: Optional[str] = None) -> None:
-    """Print generated results - raw items to stdout, UI to stderr."""
+    """Print generated results - smart output based on terminal vs pipe usage."""
+    import sys
+
     if not items:
         warning("No valid items generated")
         return
@@ -119,14 +121,19 @@ def print_results(items: List[str], output_file: Optional[str] = None) -> None:
     subsection_header(f"Results ({len(items)} items)")
     click.echo(err=True)
 
-    # Print raw items to stdout (for piping to ffuf, etc.)
-    # Print formatted items to stderr (for user visibility)
+    # Check if stdout is being piped (not a terminal)
+    is_piped = not sys.stdout.isatty()
+
     for i, item in enumerate(items, 1):
-        # Raw item to stdout for piping
-        click.echo(item)
-        # Formatted item to stderr for user
-        num = click.style(f"{i:3d}", fg=Colors.RED)
-        click.echo(f"    {num}  {click.style(item, fg=Colors.WHITE)}", err=True)
+        if is_piped:
+            # When piped: raw items to stdout, UI feedback to stderr
+            click.echo(item)  # Raw for tools like ffuf
+            num = click.style(f"{i:3d}", fg=Colors.RED)
+            click.echo(f"    {num}  {click.style(item, fg=Colors.WHITE)}", err=True)  # UI feedback
+        else:
+            # When in terminal: only show formatted version to stderr
+            num = click.style(f"{i:3d}", fg=Colors.RED)
+            click.echo(f"    {num}  {click.style(item, fg=Colors.WHITE)}", err=True)
 
     click.echo(err=True)
     
@@ -233,16 +240,24 @@ def print_pattern_analysis(result, show_details: bool = False) -> None:
                 click.echo(f"       {click.style('Alternatives:', fg=Colors.RED)} {alts}", err=True)
             click.echo(err=True)
 
-    # Generated variants - raw to stdout, formatted to stderr
+    # Generated variants - smart output based on terminal vs pipe usage
     if result.generated_variants:
+        import sys
         subsection_header(f"Generated Variants ({len(result.generated_variants)})")
         click.echo(err=True)
+
+        is_piped = not sys.stdout.isatty()
+
         for i, variant in enumerate(result.generated_variants, 1):
-            # Raw variant to stdout for piping
-            click.echo(variant)
-            # Formatted variant to stderr for user
-            num = click.style(f"{i:3d}", fg=Colors.RED)
-            click.echo(f"    {num}  {click.style(variant, fg=Colors.WHITE)}", err=True)
+            if is_piped:
+                # When piped: raw variants to stdout, UI feedback to stderr
+                click.echo(variant)  # Raw for tools
+                num = click.style(f"{i:3d}", fg=Colors.RED)
+                click.echo(f"    {num}  {click.style(variant, fg=Colors.WHITE)}", err=True)  # UI feedback
+            else:
+                # When in terminal: only show formatted version to stderr
+                num = click.style(f"{i:3d}", fg=Colors.RED)
+                click.echo(f"    {num}  {click.style(variant, fg=Colors.WHITE)}", err=True)
 
 
 def print_path_analysis(result, show_details: bool = False) -> None:
@@ -279,16 +294,24 @@ def print_path_analysis(result, show_details: bool = False) -> None:
             click.echo(f"       {comp.description}", err=True)
             click.echo(err=True)
 
-    # Generated paths - raw to stdout, formatted to stderr
+    # Generated paths - smart output based on terminal vs pipe usage
     if result.generated_paths:
+        import sys
         subsection_header(f"Generated Paths ({len(result.generated_paths)})")
         click.echo(err=True)
+
+        is_piped = not sys.stdout.isatty()
+
         for i, path in enumerate(result.generated_paths, 1):
-            # Raw path to stdout for piping
-            click.echo(path)
-            # Formatted path to stderr for user
-            num = click.style(f"{i:3d}", fg=Colors.RED)
-            click.echo(f"    {num}  {click.style(path, fg=Colors.WHITE)}", err=True)
+            if is_piped:
+                # When piped: raw paths to stdout, UI feedback to stderr
+                click.echo(path)  # Raw for tools
+                num = click.style(f"{i:3d}", fg=Colors.RED)
+                click.echo(f"    {num}  {click.style(path, fg=Colors.WHITE)}", err=True)  # UI feedback
+            else:
+                # When in terminal: only show formatted version to stderr
+                num = click.style(f"{i:3d}", fg=Colors.RED)
+                click.echo(f"    {num}  {click.style(path, fg=Colors.WHITE)}", err=True)
 
 
 # ─────────────────────────────────────────────────────────────────

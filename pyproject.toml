@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "enumeraite"
-version = "0.1.3"
+version = "0.1.4"
 description = "AI-Powered Web Attack Surface Enumeration - The future of intelligent discovery"
 authors = [{name = "Özgün Kültekin", email = "ozgun@enumeraite.com"}]
 readme = "README.md"
