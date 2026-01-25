@@ -47,7 +47,7 @@ def print_logo():
 """
     click.echo(click.style(logo, fg=Colors.BRIGHT_RED), err=True)
     click.echo(click.style("  enumeraite ", fg=Colors.BRIGHT_RED, bold=True) + 
-               click.style("v0.1.2", fg=Colors.RED), err=True)
+               click.style("v0.1.3", fg=Colors.RED), err=True)
     click.echo(err=True)
 
 

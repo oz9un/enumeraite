@@ -74,19 +74,19 @@
 
 ### Supported Providers
 
-| Provider | Setup | Best For |
-|----------|-------|----------|
-| **Claude** | `export ANTHROPIC_API_KEY='...'` | Production use (recommended) |
-| **OpenAI** | `export OPENAI_API_KEY='...'` | Production use |
-| **HuggingFace** | No setup needed | Free experimentation (limited quality) |
+| Provider | Setup | Quality | Download Size | Included by Default |
+|----------|-------|---------|---------------|-------------------|
+| **Claude** | `export ANTHROPIC_API_KEY='...'` | ⭐⭐⭐⭐⭐ Excellent | ~3MB | ✅ Yes |
+| **OpenAI** | `export OPENAI_API_KEY='...'` | ⭐⭐⭐⭐⭐ Excellent | ~5MB | ✅ Yes |
+| **HuggingFace** | `pip install "enumeraite[huggingface]"` | ⭐⭐⚫⚫⚫ Limited | ~3GB | ❌ Optional |
 
 ## Quick Start
 
 ### 30-Second Start
 
 ```bash
-# Install enumeraite
-pip install "enumeraite[claude]"
+# Install enumeraite (includes Claude + OpenAI support)
+pip install enumeraite
 
 # Set API key
 export ANTHROPIC_API_KEY='your-key-here'
@@ -100,58 +100,75 @@ enumeraite generate path --input paths.txt --count 20
 
 ### Installation
 
-**Option 1: PyPI (Recommended)**
+**Default (Recommended) - Best Quality, Lightweight:**
 ```bash
+# Includes Claude + OpenAI providers (~8MB download)
 pip install enumeraite
 ```
 
-**Option 2: From Source (Development)**
+**With Local Models (Heavy Download):**
+```bash
+# Adds HuggingFace models (~3GB+ download, limited quality)
+pip install "enumeraite[huggingface]"
+
+# Everything including heavy local models
+pip install "enumeraite[all]"
+```
+
+**From Source (Development):**
 ```bash
 git clone https://github.com/oz9un/enumeraite.git
 cd enumeraite
 pip install -e .
 ```
 
-**Optional Provider Dependencies:**
-```bash
-# For Claude support
-pip install "enumeraite[claude]"
-
-# For OpenAI support
-pip install "enumeraite[openai]"
-
-# For HuggingFace support
-pip install "enumeraite[huggingface]"
-
-# Install all providers
-pip install "enumeraite[all]"
-```
+> **💡 Why this structure?**
+>
+> - **Default**: Get the best quality tools (Claude + OpenAI) with minimal download
+> - **HuggingFace**: Only install if you need offline/local models (much larger, lower quality)
 
 ### Setup
 
-**Option 1: Claude (Recommended)**
+Both Claude and OpenAI are included by default! Just add your API key:
+
+**Claude (Recommended):**
 ```bash
 # Get API key from https://console.anthropic.com/
 export ANTHROPIC_API_KEY='your-api-key-here'
 
-# Generate paths with Claude
+# Ready to use!
 enumeraite generate path --input paths.txt --provider claude --count 20
 ```
 
-**Option 2: OpenAI**
+**OpenAI:**
 ```bash
 # Get API key from https://platform.openai.com/api-keys
 export OPENAI_API_KEY='your-api-key-here'
 
-# Generate paths with GPT-4
+# Ready to use!
 enumeraite generate path --input paths.txt --provider openai --count 20
 ```
 
-**Option 3: Local Models (Experimental)**
+**HuggingFace Local Models (Optional):**
 ```bash
+# First install the heavy dependencies (~3GB)
+pip install "enumeraite[huggingface]"
+
 # No API key needed, but quality is limited
 enumeraite generate path --input paths.txt --provider huggingface --model enumeraite/Enumeraite-x-Qwen3-4B-Path --count 20
 ```
+
+## 💡 Smart Dependency Design
+
+**Why we include Claude + OpenAI by default:**
+
+| Approach | Download Size | Quality | Cost | Offline |
+|----------|---------------|---------|------|---------|
+| **Default (Claude/OpenAI)** | ~8MB | ⭐⭐⭐⭐⭐ | Pay-per-use | ❌ |
+| **HuggingFace Local** | ~3GB+ | ⭐⭐⚫⚫⚫ | Free | ✅ |
+
+- **Most users want**: High quality results, minimal setup → **Use default**
+- **Researchers/offline use**: Local models, no API costs → **Add `[huggingface]`**
 
 ### Basic Usage Examples
 
@@ -180,12 +197,14 @@ enumeraite generate subdomain --input known_subs.txt --provider claude --validat
 ### Understanding Token Usage and Models
 
 ```bash
-# Monitor token usage with debug flag
+# Monitor token usage with debug flag (Claude + OpenAI included by default)
 enumeraite generate path --input paths.txt --provider claude --count 25 --debug
 
-# Use specific models
+# Use specific models (no extra installation needed)
 enumeraite generate path --input paths.txt --provider openai --model gpt-4 --count 20
 enumeraite generate path --input paths.txt --provider claude --model anthropic/claude-sonnet-4 --count 20
+
+# HuggingFace models (requires: pip install "enumeraite[huggingface]")
 enumeraite generate path --input paths.txt --provider huggingface --model enumeraite/Enumeraite-x-Qwen3-4B-Subdomain --count 15
 ```
 

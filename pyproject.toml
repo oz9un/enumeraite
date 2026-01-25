@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "enumeraite"
-version = "0.1.2"
+version = "0.1.3"
 description = "AI-Powered Web Attack Surface Enumeration - The future of intelligent discovery"
 authors = [{name = "Özgün Kültekin", email = "ozgun@enumeraite.com"}]
 readme = "README.md"
@@ -31,12 +31,14 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-# Core dependencies - minimal installation
+# Core dependencies - high-quality AI providers included
 dependencies = [
     "click>=8.0.0",
     "aiohttp>=3.8.0",
     "pydantic>=2.0.0",
     "requests>=2.25.0",
+    "anthropic>=0.7.0",  # Claude - lightweight, best quality
+    "openai>=1.0.0",     # OpenAI - lightweight, best quality
 ]
 
 [project.urls]
@@ -47,15 +49,11 @@ dependencies = [
 "Funding" = "https://github.com/sponsors/oz9un"
 
 [project.optional-dependencies]
-# AI Providers - install separately based on needs
-claude = ["anthropic>=0.7.0"]
-openai = ["openai>=1.0.0"]
+# Local AI models (heavy download, experimental quality)
 huggingface = ["transformers>=4.30.0", "torch>=2.0.0"]
 
-# All providers
+# All providers (including heavy local models)
 all = [
-    "anthropic>=0.7.0",
-    "openai>=1.0.0",
     "transformers>=4.30.0",
     "torch>=2.0.0"
 ]
