@@ -322,15 +322,19 @@ def _setup_provider(ctx, provider, model, generation_type=None):
 
     try:
         # Handle HuggingFace model selection first, then use normal factory
-        if provider == "huggingface" and not model and generation_type:
-            # Override config for automatic model selection
+        if provider == "huggingface":
+            # Override config for automatic model selection or explicit model
             provider_config = config.get_provider_config(provider)
             if provider_config:
                 provider_config = provider_config.copy()
-                if generation_type == "path":
-                    provider_config["model"] = "enumeraite/Enumeraite-x-Qwen3-4B-Path"
-                elif generation_type == "subdomain":
-                    provider_config["model"] = "enumeraite/Enumeraite-x-Qwen3-4B-Subdomain"
+                
+                if model:
+                    provider_config["model"] = model
+                elif generation_type:
+                    if generation_type == "path":
+                        provider_config["model"] = "enumeraite/Enumeraite-x-Qwen3-4B-Path"
+                    elif generation_type == "subdomain":
+                        provider_config["model"] = "enumeraite/Enumeraite-x-Qwen3-4B-Subdomain"
 
                 provider_class = factory._registry[provider]
                 ai_provider = provider_class(provider_config)
@@ -343,8 +347,8 @@ def _setup_provider(ctx, provider, model, generation_type=None):
             else:
                 ai_provider = factory.get_default_provider()
 
-            # Override model if specified via CLI
-            if model:
+            # Override model if specified via CLI (skip for HuggingFace as it uses object)
+            if model and ai_provider.get_provider_name() != "huggingface":
                 ai_provider.model = model
 
         return config, ai_provider
