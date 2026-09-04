@@ -1,235 +1,247 @@
-"""Integration tests for CLI commands."""
-import pytest
-import tempfile
-import os
+"""Small end-to-end CLI tests with a deterministic fake provider."""
+
 import json
+from pathlib import Path
+
 from click.testing import CliRunner
+
 from enumeraite.cli.main import cli
+from enumeraite.core.models import GenerationResult
 
 
-class TestCLIIntegration:
-    """Test CLI commands end-to-end."""
+class FakeProvider:
+    model = "fake-model"
 
-    def setup_method(self):
-        """Setup test fixtures."""
-        self.runner = CliRunner()
+    def get_provider_name(self):
+        return "fake"
 
-        # Create temporary input file
-        self.temp_input = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-        self.temp_input.write("/api/users\n")
-        self.temp_input.write("/api/auth/login\n")
-        self.temp_input.write("/admin/dashboard\n")
-        self.temp_input.close()
-
-    def teardown_method(self):
-        """Clean up test fixtures."""
-        os.unlink(self.temp_input.name)
-
-    def test_batch_command_basic_functionality(self):
-        """Test batch command with minimal options."""
-        result = self.runner.invoke(cli, [
-            'batch',
-            '--target', 'example.com',
-            '--input', self.temp_input.name,
-            '--count', '3'
-        ])
-
-        # Should fail gracefully due to no API keys configured
-        # But should not crash with syntax errors
-        assert "Configuration error" in result.output or "Provider error" in result.output
-
-    def test_batch_command_with_output_file(self):
-        """Test batch command with output file."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_output:
-            temp_output_path = temp_output.name
-
-        try:
-            result = self.runner.invoke(cli, [
-                'batch',
-                '--target', 'example.com',
-                '--input', self.temp_input.name,
-                '--output', temp_output_path,
-                '--count', '5'
-            ])
-
-            # Should fail gracefully due to no API keys
-            assert "Configuration error" in result.output or "Provider error" in result.output
-
-        finally:
-            if os.path.exists(temp_output_path):
-                os.unlink(temp_output_path)
-
-    def test_batch_command_advanced_output(self):
-        """Test batch command with advanced JSON output."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_output:
-            temp_output_path = temp_output.name
-
-        try:
-            result = self.runner.invoke(cli, [
-                'batch',
-                '--target', 'example.com',
-                '--input', self.temp_input.name,
-                '--output', temp_output_path,
-                '--count', '5',
-                '--advanced'
-            ])
-
-            # Should fail gracefully due to no API keys
-            assert "Configuration error" in result.output or "Provider error" in result.output
-
-        finally:
-            if os.path.exists(temp_output_path):
-                os.unlink(temp_output_path)
-
-    def test_continuous_command_basic_functionality(self):
-        """Test continuous command with minimal options."""
-        result = self.runner.invoke(cli, [
-            'continuous',
-            '--target', 'example.com',
-            '--input', self.temp_input.name,
-            '--duration', '1m',  # Very short duration
-            '--batch-size', '5',
-            '--max-empty-rounds', '1'
-        ])
-
-        # Should fail gracefully due to no API keys configured
-        # But should not crash with syntax errors
-        assert "Configuration error" in result.output or "Provider error" in result.output
-
-    def test_continuous_command_invalid_duration(self):
-        """Test continuous command with invalid duration."""
-        result = self.runner.invoke(cli, [
-            'continuous',
-            '--target', 'example.com',
-            '--input', self.temp_input.name,
-            '--duration', 'invalid_duration'
-        ])
-
-        assert result.exit_code != 0
-        assert "Invalid duration" in result.output
-
-    def test_continuous_command_nonexistent_input(self):
-        """Test continuous command with nonexistent input file."""
-        result = self.runner.invoke(cli, [
-            'continuous',
-            '--target', 'example.com',
-            '--input', 'nonexistent_file.txt',
-            '--duration', '1m'
-        ])
-
-        assert result.exit_code != 0
-
-    def test_batch_command_missing_target(self):
-        """Test error handling for missing target."""
-        result = self.runner.invoke(cli, [
-            'batch',
-            '--input', self.temp_input.name
-        ])
-
-        assert result.exit_code != 0
-        assert 'Missing option' in result.output or 'Usage:' in result.output
-
-    def test_continuous_command_missing_target(self):
-        """Test error handling for missing target in continuous mode."""
-        result = self.runner.invoke(cli, [
-            'continuous',
-            '--input', self.temp_input.name
-        ])
-
-        assert result.exit_code != 0
-        assert 'Missing option' in result.output or 'Usage:' in result.output
-
-    def test_help_commands(self):
-        """Test that all help commands work."""
-        # Main help
-        result = self.runner.invoke(cli, ['--help'])
-        assert result.exit_code == 0
-        assert 'Enumeraite' in result.output
-
-        # Batch help
-        result = self.runner.invoke(cli, ['batch', '--help'])
-        assert result.exit_code == 0
-        assert 'target' in result.output
-
-        # Continuous help
-        result = self.runner.invoke(cli, ['continuous', '--help'])
-        assert result.exit_code == 0
-        assert 'duration' in result.output
-
-    def test_version_command(self):
-        """Test version command works."""
-        result = self.runner.invoke(cli, ['--version'])
-        assert result.exit_code == 0
-        assert '0.1.0' in result.output
-
-
-class TestCLIUtilities:
-    """Test CLI utility functions."""
-
-    def test_load_paths_from_file_with_comments(self):
-        """Test loading paths file with comments and whitespace."""
-        from enumeraite.cli.commands import _load_paths_from_file
-
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write("/api/users\n")
-            f.write("# This is a comment\n")
-            f.write("   /api/admin/login   \n")  # Whitespace
-            f.write("\n")  # Empty line
-            f.write("/api/data/export\n")
-            temp_path = f.name
-
-        try:
-            paths = _load_paths_from_file(temp_path)
-            assert len(paths) == 3
-            assert "/api/users" in paths
-            assert "/api/admin/login" in paths
-            assert "/api/data/export" in paths
-            assert "# This is a comment" not in paths
-        finally:
-            os.unlink(temp_path)
-
-    def test_output_functions(self):
-        """Test output formatting functions."""
-        from enumeraite.cli.commands import _output_simple, _output_advanced
-        from enumeraite.core.models import GenerationResult, ValidationResult
-
-        # Test simple output
-        result = GenerationResult(
-            paths=["/api/test1", "/api/test2"],
-            confidence_scores=[0.8, 0.7],
-            metadata={"provider": "test"}
+    def generate_paths(self, known, target, count, max_depth=None, strategy=None):
+        values = ["/api/v2/users", "/api/v2/orders"][:count]
+        return GenerationResult(
+            paths=values,
+            confidence_scores=[0.9, 0.6][: len(values)],
+            metadata={"provider": "fake", "model": self.model, "target": target},
         )
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            temp_path = f.name
 
-        try:
-            _output_simple(result, temp_path)
+def _wire_fake(monkeypatch):
+    monkeypatch.setattr("enumeraite.cli.run_command.detect_provider", lambda config: "fake")
+    monkeypatch.setattr(
+        "enumeraite.cli.run_command.ProviderFactory.create_provider",
+        lambda self, name, overrides=None: FakeProvider(),
+    )
 
-            with open(temp_path, 'r') as f:
-                content = f.read()
-                assert "/api/test1" in content
-                assert "/api/test2" in content
 
-        finally:
-            os.unlink(temp_path)
+def test_run_is_pipe_clean(tmp_path: Path, monkeypatch):
+    _wire_fake(monkeypatch)
+    seed = tmp_path / "paths.txt"
+    seed.write_text("/api/v1/users\n/api/v1/orders\n", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["run", str(seed), "--target", "example.com", "-q"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["/api/v2/users", "/api/v2/orders"]
 
-        # Test advanced output
-        validation_results = [
-            ValidationResult(path="https://example.com/api/test1", status_code=200, exists=True, method="GET")
-        ]
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            temp_path = f.name
+def test_run_json_output_file(tmp_path: Path, monkeypatch):
+    _wire_fake(monkeypatch)
+    seed = tmp_path / "paths.txt"
+    output = tmp_path / "result.json"
+    seed.write_text("/api/v1/users\n/api/v1/orders\n", encoding="utf-8")
+    result = CliRunner().invoke(
+        cli,
+        [
+            "run",
+            str(seed),
+            "--target",
+            "example.com",
+            "--json",
+            "-o",
+            str(output),
+            "-q",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["candidates"][0] == {"value": "/api/v2/users", "confidence": 0.9}
+    assert payload["metadata"]["provider"] == "fake"
 
-        try:
-            _output_advanced(result, validation_results, temp_path)
 
-            with open(temp_path, 'r') as f:
-                data = json.load(f)
-                assert data["generated_count"] == 2
-                assert len(data["generated_paths"]) == 2
-                assert data["generated_paths"][0]["path"] == "/api/test1"
+def test_run_json_sanitizes_nonstandard_provider_metadata(tmp_path: Path, monkeypatch):
+    class UnsafeProvider(FakeProvider):
+        def generate_paths(self, known, target, count, max_depth=None, strategy=None):
+            cycle = {}
+            cycle["self"] = cycle
+            return GenerationResult(
+                paths=["/safe"],
+                confidence_scores=[0.8],
+                metadata={
+                    "bad_float": float("nan"),
+                    "custom": object(),
+                    "cycle": cycle,
+                },
+            )
 
-        finally:
-            os.unlink(temp_path)
+    monkeypatch.setattr("enumeraite.cli.run_command.detect_provider", lambda config: "fake")
+    monkeypatch.setattr(
+        "enumeraite.cli.run_command.ProviderFactory.create_provider",
+        lambda self, name, overrides=None: UnsafeProvider(),
+    )
+    seed = tmp_path / "paths.txt"
+    seed.write_text("/seed\n", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["run", str(seed), "--json", "-q"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(
+        result.output, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value))
+    )
+    assert payload["metadata"]["bad_float"] == 0.0
+    assert payload["metadata"]["cycle"]["self"] == "<cycle>"
+
+
+def test_run_selects_huggingface_finetune_for_detected_kind(tmp_path: Path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr("enumeraite.cli.run_command.detect_provider", lambda config: "huggingface")
+    monkeypatch.setattr(
+        "enumeraite.cli.run_command.ProviderFactory.create_provider",
+        lambda self, name, overrides=None: captured.update(overrides or {}) or FakeProvider(),
+    )
+    seed = tmp_path / "paths.txt"
+    seed.write_text("/api/v1/users\n/api/v1/orders\n", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["run", str(seed), "-q"])
+    assert result.exit_code == 0, result.output
+    assert captured["model"].endswith("-Path")
+
+
+def test_run_rejects_credential_target_before_provider_creation(tmp_path: Path, monkeypatch):
+    called = {"provider": False}
+    monkeypatch.setattr("enumeraite.cli.run_command.detect_provider", lambda config: "fake")
+
+    def create(*args, **kwargs):
+        called["provider"] = True
+        return FakeProvider()
+
+    monkeypatch.setattr("enumeraite.cli.run_command.ProviderFactory.create_provider", create)
+    seed = tmp_path / "paths.txt"
+    seed.write_text("/api/users\n", encoding="utf-8")
+    result = CliRunner().invoke(
+        cli,
+        ["run", str(seed), "--target", "https://user:secret@example.test", "-q"],
+    )
+    assert result.exit_code != 0
+    assert "credentials" in result.output
+    assert not called["provider"]
+
+
+def test_benchmark_baseline_end_to_end(tmp_path: Path):
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "demo.json").write_text(
+        json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "Demo", "version": "1"},
+                "paths": {
+                    "/api/v1/users": {},
+                    "/api/v1/orders": {},
+                    "/api/v2/users": {},
+                    "/api/v2/orders": {},
+                    "/api/v1/status": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    result = CliRunner().invoke(
+        cli,
+        ["bench", "openapi", "--specs", str(specs), "--count", "10", "-o", str(out)],
+    )
+    assert result.exit_code == 0, result.output
+    assert (out / "results.json").exists()
+    assert (out / "report.md").exists()
+    payload = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    assert payload["engines"]["mutation"]["metadata"]["type"] == "baseline"
+    assert set(payload["engines"]) == {"structural", "mutation-only", "mutation"}
+
+    invalid = CliRunner().invoke(
+        cli,
+        [
+            "bench",
+            "openapi",
+            "--specs",
+            str(specs),
+            "--budgets",
+            "0",
+            "-o",
+            str(tmp_path / "invalid"),
+        ],
+    )
+    assert invalid.exit_code != 0
+    assert "at least one positive integer" in invalid.output
+
+
+def test_legacy_generate_writes_output_file(tmp_path: Path, monkeypatch):
+    seed = tmp_path / "paths.txt"
+    output = tmp_path / "generated.txt"
+    seed.write_text("/api/v1/users\n/api/v1/orders\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "enumeraite.cli.commands._setup_provider",
+        lambda ctx, provider, model, generation_type=None: (None, FakeProvider()),
+    )
+    result = CliRunner().invoke(
+        cli, ["generate", "path", "-i", str(seed), "-o", str(output), "-c", "2"]
+    )
+    assert result.exit_code == 0, result.output
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        "/api/v2/users",
+        "/api/v2/orders",
+    ]
+
+
+def test_legacy_generate_rejects_non_positive_budget(tmp_path: Path):
+    seed = tmp_path / "paths.txt"
+    seed.write_text("/api/v1/users\n", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["generate", "path", "-i", str(seed), "-c", "0"])
+    assert result.exit_code != 0
+    assert "0 is not in the range" in result.output
+
+
+def test_legacy_subdomain_requires_unambiguous_target_and_validation_dependency(
+    tmp_path: Path,
+):
+    single = tmp_path / "single.txt"
+    single.write_text("api.example.co.uk\n", encoding="utf-8")
+    ambiguous = CliRunner().invoke(cli, ["generate", "subdomain", "-i", str(single)])
+    assert ambiguous.exit_code != 0
+    assert "pass --target" in ambiguous.output
+
+    siblings = tmp_path / "siblings.txt"
+    siblings.write_text("api.example.com\ncdn.example.com\n", encoding="utf-8")
+    dependency = CliRunner().invoke(
+        cli,
+        ["generate", "subdomain", "-i", str(siblings), "--check-http"],
+    )
+    assert dependency.exit_code != 0
+    assert "requires --validate" in dependency.output
+
+
+def test_legacy_generate_does_not_claim_failed_output_write(tmp_path: Path, monkeypatch):
+    seed = tmp_path / "paths.txt"
+    seed.write_text("/api/v1/users\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "enumeraite.cli.commands._setup_provider",
+        lambda ctx, provider, model, generation_type=None: (None, FakeProvider()),
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "generate",
+            "path",
+            "-i",
+            str(seed),
+            "-o",
+            str(tmp_path / "missing" / "output.txt"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Generation failed" in result.output
+    assert "Saved to" not in result.output

@@ -85,6 +85,11 @@ test_paths.txt
 # Logs
 *.log
 
+# Local benchmark data and generated reports
+bench-data/
+bench-results/
+benchmark-results/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -96,6 +101,9 @@ Pipfile.lock
 
 # poetry
 poetry.lock
+
+# uv application lock (Enumeraite is distributed as a library)
+uv.lock
 
 # Celery
 celerybeat-schedule

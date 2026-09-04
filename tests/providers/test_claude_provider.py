@@ -1,9 +1,11 @@
 """Tests for Claude provider implementation."""
-import pytest
+
 from unittest.mock import Mock, patch
+
 from enumeraite.providers.claude_provider import ClaudeProvider
 
-@patch('anthropic.Anthropic')
+
+@patch("anthropic.Anthropic")
 def test_claude_provider_generation(mock_anthropic):
     """Test Claude provider path generation with mocked API response."""
     mock_client = Mock()
@@ -25,6 +27,7 @@ def test_claude_provider_generation(mock_anthropic):
     assert all(0.0 <= score <= 1.0 for score in result.confidence_scores)
     assert result.metadata["provider"] == "claude"
     assert result.metadata["target"] == "example.com"
+
 
 def test_claude_provider_name():
     """Test that provider returns correct name."""

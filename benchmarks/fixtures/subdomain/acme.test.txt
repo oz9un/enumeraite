@@ -1,0 +1,25 @@
+# Synthetic smoke fixture only; not evidence of real-world recall.
+api-dev.acme.test
+api-qa.acme.test
+api-staging.acme.test
+api-prod.acme.test
+auth-dev.acme.test
+auth-qa.acme.test
+auth-staging.acme.test
+auth-prod.acme.test
+billing-dev.acme.test
+billing-qa.acme.test
+billing-staging.acme.test
+billing-prod.acme.test
+files-dev.acme.test
+files-qa.acme.test
+files-staging.acme.test
+files-prod.acme.test
+worker-dev-01.acme.test
+worker-dev-02.acme.test
+worker-prod-01.acme.test
+worker-prod-02.acme.test
+admin.acme.test
+docs.acme.test
+portal.acme.test
+status.acme.test

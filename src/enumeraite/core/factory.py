@@ -1,12 +1,26 @@
 """Provider factory for creating and managing AI providers."""
-from typing import Dict, List, Type
-from .provider import BaseProvider
+
+from typing import Any, ClassVar, Dict, List, Optional, Type
+
 from .config import Config
+from .provider import BaseProvider
+
+HOSTED_API_KEY_HINTS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "claude": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "together": "TOGETHER_API_KEY",
+}
+
 
 class ProviderFactory:
     """Factory for creating and managing AI providers."""
 
-    _registry: Dict[str, Type[BaseProvider]] = {}
+    _registry: ClassVar[Dict[str, Type[BaseProvider]]] = {}
 
     def __init__(self, config: Config):
         """Initialize the factory with configuration.
@@ -29,28 +43,28 @@ class ProviderFactory:
 
     def _register_default_providers(self) -> None:
         """Register built-in providers."""
-        try:
-            from ..providers.openai_provider import OpenAIProvider
-            self.register_provider("openai", OpenAIProvider)
-        except ImportError:
-            # OpenAI provider not available (missing dependencies)
-            pass
+        from ..providers.anthropic_provider import AnthropicProvider
+        from ..providers.claude_provider import ClaudeProvider
+        from ..providers.huggingface_provider import HuggingFaceProvider
+        from ..providers.openai_compatible import PRESETS, OpenAICompatibleProvider
+        from ..providers.openai_provider import OpenAIProvider
 
-        try:
-            from ..providers.claude_provider import ClaudeProvider
-            self.register_provider("claude", ClaudeProvider)
-        except ImportError:
-            # Claude provider not available (missing dependencies)
-            pass
+        self.register_provider("openai", OpenAIProvider)
+        self.register_provider("claude", ClaudeProvider)
+        self.register_provider("anthropic", AnthropicProvider)
+        self.register_provider("openai-compat", OpenAICompatibleProvider)
+        for preset in PRESETS:
+            # Never let a preset alias replace the backward-compatible
+            # ``openai`` registration. A regression test guards this.
+            if preset not in self._registry:
+                self.register_provider(preset, OpenAICompatibleProvider)
+        # This module performs its own optional-runtime check and raises a
+        # targeted installation hint only when the provider is selected.
+        self.register_provider("huggingface", HuggingFaceProvider)
 
-        try:
-            from ..providers.huggingface_provider import HuggingFaceProvider
-            self.register_provider("huggingface", HuggingFaceProvider)
-        except ImportError:
-            # HuggingFace provider not available (missing dependencies)
-            pass
-
-    def create_provider(self, provider_name: str) -> BaseProvider:
+    def create_provider(
+        self, provider_name: str, overrides: Optional[Dict[str, Any]] = None
+    ) -> BaseProvider:
         """Create a provider instance.
 
         Args:
@@ -68,37 +82,35 @@ class ProviderFactory:
             # Provide installation instructions for missing providers
             install_msg = ""
             if provider_name == "openai":
-                install_msg = "\n\nTo install OpenAI support:\n  pip install \"enumeraite[openai]\""
+                install_msg = "\n\nReinstall provider support:\n  pip install --upgrade enumeraite"
             elif provider_name == "claude":
-                install_msg = "\n\nTo install Claude support:\n  pip install \"enumeraite[claude]\""
+                install_msg = "\n\nReinstall provider support:\n  pip install --upgrade enumeraite"
             elif provider_name in ["anthropic"]:
-                install_msg = "\n\nTo install Claude support:\n  pip install \"enumeraite[claude]\""
+                install_msg = "\n\nReinstall provider support:\n  pip install --upgrade enumeraite"
             else:
-                install_msg = "\n\nTo install all providers:\n  pip install \"enumeraite[all]\""
+                install_msg = '\n\nTo install all providers:\n  pip install "enumeraite[all]"'
 
-            raise ValueError(f"Provider '{provider_name}' not available. Available: {available}{install_msg}")
+            raise ValueError(
+                f"Unknown provider '{provider_name}'. Available: {available}{install_msg}"
+            )
 
         provider_config = self.config.get_provider_config(provider_name)
         if not provider_config:
-            # Provide helpful setup instructions for each provider
-            if provider_name == "claude":
-                raise ValueError(
-                    f"Claude provider not configured. Please set up:\n"
-                    f"  export ANTHROPIC_API_KEY='your-api-key-here'\n"
-                    f"  Or create enumeraite.json with your Claude API key.\n"
-                    f"  Get API key: https://console.anthropic.com/"
-                )
-            elif provider_name == "openai":
-                raise ValueError(
-                    f"OpenAI provider not configured. Please set up:\n"
-                    f"  export OPENAI_API_KEY='your-api-key-here'\n"
-                    f"  Or create enumeraite.json with your OpenAI API key.\n"
-                    f"  Get API key: https://platform.openai.com/api-keys"
-                )
-            else:
-                raise ValueError(f"No configuration found for provider '{provider_name}'")
+            raise ValueError(f"No configuration found for provider '{provider_name}'")
 
         provider_class = self._registry[provider_name]
+        provider_config = dict(provider_config)
+        provider_config.update(overrides or {})
+        if provider_name in HOSTED_API_KEY_HINTS and not provider_config.get("api_key"):
+            raise ValueError(
+                f"Provider '{provider_name}' requires {HOSTED_API_KEY_HINTS[provider_name]} "
+                "or an api_key in enumeraite.json"
+            )
+        if provider_class.__name__ == "OpenAICompatibleProvider":
+            provider_config.setdefault(
+                "preset",
+                provider_name if provider_name != "openai-compat" else "openai",
+            )
         return provider_class(provider_config)
 
     def get_available_providers(self) -> List[str]:
@@ -109,7 +121,10 @@ class ProviderFactory:
         """
         available = []
         for name in self._registry.keys():
-            if self.config.get_provider_config(name):
+            provider_config = self.config.get_provider_config(name)
+            if provider_config and (
+                name not in HOSTED_API_KEY_HINTS or provider_config.get("api_key")
+            ):
                 available.append(name)
         return available
 
@@ -131,7 +146,21 @@ class ProviderFactory:
             return self.create_provider(default_name)
 
         # Intelligent fallback: prioritize quality models
-        priority_order = ["claude", "openai", "huggingface"]
+        priority_order = [
+            "anthropic",
+            "openai",
+            "openrouter",
+            "deepseek",
+            "minimax",
+            "groq",
+            "together",
+            "ollama",
+            "vllm",
+            "llamacpp",
+            "local",
+            "claude",
+            "huggingface",
+        ]
         for provider_name in priority_order:
             if provider_name in available:
                 return self.create_provider(provider_name)
