@@ -55,7 +55,7 @@ jobs:
       - run: >-
           python -m pip install -e '.[dev]'
           'click==8.3.3' 'pydantic==2.4.0' 'requests==2.33.0'
-          'urllib3==2.7.0' 'PyYAML==6.0.0' 'dnspython==2.6.1'
+          'urllib3==2.7.0' 'PyYAML==6.0.0' 'dnspython==2.6.1' 'tldextract==5.3.0'
           'openai==1.55.3' 'anthropic==0.40.0' 'httpx==0.28.1'
       - run: python -m pytest -q
       - run: python -m pip check

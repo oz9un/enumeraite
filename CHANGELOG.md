@@ -1,7 +1,70 @@
 # Changelog
 
+### Local live dashboard (unreleased)
+
+- Added off-by-default witnessed-layout vocabulary expansion in the dashboard
+  and `--vocabulary-breadth`. It replaces eligible third AI passes, shares the
+  existing budget, and keeps Python in charge of structure, scope and bounded
+  expansion. Guesses require DNS verification; malformed responses do not
+  trigger another paid request. Old checkpoints and running dashboard APIs
+  remain compatible.
+- Added per-method queued/checked/result counts to reports and the Patterns
+  tab; unresolved DNS and wildcard matches are not conflated with misses.
+- Improved numeric planning with shared indexes and lazy admitted-plan
+  materialization. Tightened wildcard calibration and numeric-resume handling,
+  and added the scoped MiniMax M3 fast subdomain profile.
+- Broader discovery uses up to three distinct, checkpointed hosted-model passes
+  per round, each requesting at most 20 names from rotating verified cohorts.
+  Numeric families no longer crowd other naming styles out of the prompt.
+  Python pattern pages skip historical guesses before truncation. New scans
+  keep exploring through misses; `--until-stale` explicitly restores the two
+  no-hit-round stop. Existing budgets, scope, DNS rate, and hard limits remain.
+- Added optional TypeSafe Jev plan ranking (`--predictor jev`), a separate
+  session-only UI credential, explicitly additional cumulative prediction budget,
+  recent plan scores, and deterministic fallback. Fixed HTTPS endpoint, pinned
+  model, bounded typed requests, durable reservations, no paid retries, and
+  simulated-response tests; no live Jev quality or cost benchmark claimed.
+- Numeric families now preserve fixed tokens, enumerate observed changing slots
+  in bounded waves with history-based range progress, and sample generic child
+  hypotheses across representative hosts instead of repeating them everywhere.
+  Supported family ranges are generated in Python, not listed by the text model.
+- Accept root domains or known subdomains as scan input, with an offline,
+  private-suffix-aware scope preview, optional starting hostnames, `--seed`, and
+  explicit `--scope`. Seed-first scans verify supplied clues before expansion;
+  scans without seeds collect public names automatically.
+- Added optional, bounded, keyless subfinder collection when installed, alongside
+  crt.sh and HackerTarget, with isolated configuration and no shell invocation.
+- Added `enumeraite ui`: start, pause, resume, and inspect saved scans from a
+  local browser dashboard, with worker activity, discovery trees, findings,
+  inferred patterns, resource counters, and downloadable reports.
+- Added session-only MiniMax, OpenAI, and Anthropic credential entry and optional budgeted AI from the
+  dashboard. Credentials never belong in persisted scan state or exports.
+- Removed the dashboard access-token requirement for the local workflow; plain
+  local URLs work without login or browser storage. Provider API keys remain
+  session-only. Loopback binding and cross-origin/host checks remain enabled.
+- Added a loopback-only HTTP boundary with origin/host checks,
+  bounded requests, no request logging, and self-contained packaged assets.
+
 ## 0.2.0 — Unreleased
 
+- Added `scan TARGET` with keyless passive discovery from certificate transparency
+  and HackerTarget, common-label bootstrap, wildcard-aware DNS verification, and
+  recursive expansion from verified findings.
+- Added observed-slot pattern transfers, bounded cross-combinations, numeric
+  slots anywhere in a label with preserved zero padding, tentative region/product/
+  environment hypotheses, and bounded deeper DNS labels.
+- Added shared concurrent DNS workers and global query-rate, candidate, round,
+  depth, time, and verified-finding limits. `--find` includes known verified names;
+  candidate limits include passive names, and source failures/caps are visible.
+- Made bare scans free (`--provider none`). An explicit dollar budget can
+  auto-select configured AI; conservative pre-call token reservations and a
+  resumable ledger bound estimated spending, with explicit price overrides for
+  unknown models/endpoints. Estimates are not provider invoices, and already
+  in-flight SDK requests remain subject to SDK I/O timeout behavior.
+- Added private atomic scan checkpoints and `--resume`, preserving cumulative
+  attempts and estimated spending while starting a fresh time allowance.
+- Added findings-only stdout, structured scan reports, a terminal discovery tree
+  on stderr, and self-contained HTML trees with escaped remote metadata.
 - Added structured, confidence-ranked generation shared by all chat providers.
 - Added Anthropic and OpenAI-compatible backends for hosted and local models.
 - Added first-class MiniMax OpenAI-compatible support with reasoning-aware completion budgets.

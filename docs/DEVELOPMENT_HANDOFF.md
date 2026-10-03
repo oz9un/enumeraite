@@ -1,188 +1,180 @@
 # Enumeraite 0.2.0 development handoff
 
-Last updated: 2026-09-04
+Last updated: 2026-10-03
 
-## Snapshot
+## Status
 
-This branch contains the unreleased Enumeraite 0.2.0 pipeline rebuild, based on
-`origin/main` at `9d8f700`. It is a development branch, not a release. No tag,
-pull request, PyPI upload, scheduled automation, or Recon Royale submission has
-been created.
+This is an unreleased development branch:
+`codex/enumeraite-discovery-console-20261003`. It continues the 0.2 pipeline
+rebuild with a resumable scan workflow and a local discovery dashboard.
+It is not a release, tag, PyPI upload, or claim of exhaustive enumeration.
 
-Large research datasets and generated benchmark results intentionally remain
-local under the ignored `bench-data/`, `bench-results/`, and
-`benchmark-results/` directories. No API credentials belong in this repository;
-`.env.example` contains names and empty placeholders only.
+Only source, tests, public documentation and synthetic fixtures belong in Git.
+Credentials, real-target inventories, scan checkpoints, model response traces,
+private research reports and local session notes must stay outside the published
+tree. The ignored benchmark directories are for local work, not public fixtures.
 
-## What is implemented
-
-- A shared structured prompt, parser, and provider pipeline for Anthropic and
-  OpenAI-compatible services.
-- First-class presets for MiniMax, OpenAI, OpenRouter, Ollama, vLLM, llama.cpp,
-  Groq, DeepSeek, and Together, plus the existing Hugging Face path.
-- Bounded provider batches, retries, seed context, token/cache/reasoning
-  telemetry, strict candidate validation, and tolerant structured-output
-  recovery.
-- A structural-first hybrid candidate pool for route ancestors,
-  version/resource grids, subdomain environment grids, and adjacent numbered
-  hosts. Paid inference is skipped when structural candidates already fill a
-  small candidate budget.
-- An opt-in generate -> validate -> refeed loop. Newly validated findings become
-  evidence in the next round; previous guesses are excluded; the loop stops on
-  candidate, round, inconclusive-validation, or diminishing-return limits.
-- DNS validation with per-query deadlines and wildcard suppression.
-- HTTP validation with scoped no-redirect requests, TLS verification,
-  per-prefix soft-404 calibration, bounded response bodies, and wall-clock body
-  deadlines.
-- Replayable OpenAPI JSON/YAML/Swagger 2 and subdomain benchmarks, deterministic
-  splits, structural and lexical-mutation controls, candidate-source attribution,
-  cost telemetry, and zero-inference replay.
-- The `route-shape-v10` scorer, including template-aware matching, distinct route
-  coverage, indexed matching, clustered confidence intervals, and cost/source
-  metrics.
-- A simpler CLI centered on `run`, `doctor`, `bench`, and safety-gated `royale`.
-  Output remains clean when piped and can be emitted as structured JSON. The old
-  `generate` and `analyze` commands remain available.
-- Security and release hardening: bounded regular-file reads, bounded parser
-  input, error/secret sanitization, scope filtering, immutable Hugging Face
-  revisions, typed-package metadata, modern dependency floors, and expanded CI.
-
-## Current user experience: precise limitations
-
-The closest current subdomain workflow is:
+## Getting started
 
 ```bash
-enumeraite run known-subs.txt \
-  --target example.com \
-  --loop --rounds 10 --count 1000
-```
-
-Important semantics:
-
-- A seed file is mandatory. A bare apex cannot yet bootstrap a complete scan.
-- `--count N` is a maximum candidate-attempt budget, not a promise to find N
-  verified subdomains.
-- `--validate` is a one-shot filter. `--loop` is what reuses verified findings in
-  later rounds.
-- Feedback and discoveries live only for that invocation; scans cannot yet be
-  resumed.
-- There is no runtime USD ceiling, whole-scan time limit, verified-result target,
-  persistent discovery frontier, or `enumeraite scan example.com` facade.
-- The feedback loop is adaptive, validation-guided discovery, not reinforcement
-  learning. It does not update model weights or persist a learned policy.
-- It does not yet pivot through certificate transparency, CNAMEs, IPs, ASNs,
-  certificates, or HTTP content when a host is discovered.
-
-## Verification completed
-
-The following checks were recorded against this implementation before the
-handoff commit:
-
-- 323 tests passed independently on Python 3.10, 3.11, 3.12, 3.13, and 3.14.
-- The full suite also passed on Python 3.10 with the declared minimum core
-  dependencies.
-- Fresh pre-push coverage was 79.89%, above the enforced 75% floor.
-- Black, isort, Ruff, mypy, Bandit, Semgrep, and Vulture passed.
-- Core dependencies and a real isolated Hugging Face dependency environment
-  passed `pip check` and vulnerability audits.
-- The source distribution and wheel built successfully and passed Twine,
-  wheel-content, metadata, clean-install, CLI doctor, and typed-marker checks.
-- `git diff --check` passed, and 32,500 one-off Unicode, URL, parser, candidate,
-  matcher, and mutation property cases passed.
-- Secret scanning of tracked/nonignored source and generated benchmark results
-  found no committed credentials. A fresh staged-tree and branch-history scan
-  is required immediately before every push.
-
-## Benchmark conclusions
-
-These are regression and design signals, not publishable superiority claims:
-
-- Petstore model-only at 20 candidates: MiniMax M3 and M2.7 each recovered 6/10
-  hidden shapes; mutation recovered 2/10. Recorded costs were about $0.0075 and
-  $0.0017 respectively. M2.7 was roughly 4.3 times cheaper per recovered shape
-  in this trace, while M3 ranked its hits better.
-- crAPI hybrid at 20 candidates: each MiniMax model recovered 4/28 hidden shapes;
-  mutation recovered 3/28.
-- A final local Ollama `qwen3:8b` integration run recovered 9/26 hidden shapes at
-  20 hybrid candidates, versus 4/20 for the deterministic union on that single
-  demo split.
-- In the three-split synthetic subdomain fixture, MiniMax hybrid recovered 32/60
-  versus mutation's 31/52 and had worse precision/average precision. Paid model
-  inference was not justified on that fixture.
-- Larger deterministic ablations show that structural-first generation is the
-  high-precision core; broad lexical mutation is primarily a low-precision tail.
-
-Public/famous specifications are useful smoke tests but are vulnerable to model
-memorization. The next credible evaluation needs 30-100 private or temporally
-held-out OpenAPI specifications, five deterministic splits at budgets
-10/25/50/100, and complete ground truth for at least 20 independent DNS apexes.
-
-## Next milestone: effortless bounded scanning
-
-Keep `run` as the expert seed-driven interface and add a user-facing facade:
-
-```bash
-enumeraite scan example.com
-enumeraite scan example.com --find 100
-enumeraite scan example.com --budget-usd 5
-enumeraite scan example.com --time 30m --until-stale
-enumeraite scan example.com --resume
-```
-
-Recommended implementation order:
-
-1. Add `scan TARGET`, with optional `--seeds FILE` and stdin support. Infer DNS
-   apex versus URL and provide a conservative built-in seed bootstrap when no
-   seeds are supplied. Keep scope and authorization messaging explicit.
-2. Introduce one composable stop controller covering verified-find target,
-   maximum candidates, rounds, stale rounds, monotonic deadline, and USD spend.
-   A request for N findings must count unique validated in-scope results, not
-   guesses, and must require at least one hard safety bound.
-3. Make USD limits pre-call constraints. Use a dated model-price registry with
-   explicit overrides, reserve worst-case prompt/completion cost before each
-   batch, reconcile against returned usage, shrink the final affordable batch,
-   and fail closed for unknown prices. Strict budget mode should not retry an
-   ambiguous paid request automatically.
-4. Replace the ephemeral feedback loop with a resumable `DiscoverySession` and
-   an atomic, versioned per-target state file outside the repository. Track each
-   frontier entry's value, source/parent, confidence, validation state, round,
-   timestamps, and expansion status, plus session spend and stop reason.
-5. Add a persistent priority frontier: bootstrap seeds -> structural/model
-   candidates -> validation -> enqueue verified findings as new evidence and
-   pivots. Apply hard breadth, depth, rate, scope, candidate, time, and cost caps.
-6. If adaptive allocation is added, use an auditable bandit over candidate-source
-   families based on verified discoveries per cost. Describe it as adaptive
-   validation-guided discovery; do not claim model-weight reinforcement learning.
-7. Add live TTY status for verified count, attempts, spend/reserved budget,
-   elapsed/remaining time, last discovery, and final stop reason. Preserve
-   findings-only stdout when piped and expose the full ledger in JSON.
-8. Test with fake clocks, providers, pricing, and DNS. Prove that cost reservation
-   cannot cross the configured ceiling; test `--find` semantics, deadline
-   propagation, scope/wildcard safety, resume equivalence, corrupt-state
-   rejection, and duplicate-spend prevention. Then benchmark fixed candidate,
-   USD, and time policies.
-
-## Research and maintenance queue
-
-- Design zero-seed bootstrap carefully: conservative bundled labels first;
-  certificate-transparency and other passive sources should be explicit adapters.
-- Calibrate candidate confidence on representative private data; current scores
-  are ranking signals, not reliable probabilities.
-- Compare MiniMax M3, M2.7, `qwen3:8b`, and one independent model in pure-model
-  and hybrid modes before changing the default model fraction.
-- Refactor the highest-complexity orchestration functions only with
-  behavior-preserving tests.
-
-## Continue on another machine
-
-```bash
-git fetch origin
-git switch codex/enumeraite-v0.2-handoff
+git clone --branch codex/enumeraite-discovery-console-20261003 https://github.com/oz9un/enumeraite.git
+cd enumeraite
 python -m venv .venv
 . .venv/bin/activate
 pip install -e '.[dev]'
-pytest -q
+enumeraite ui
 ```
 
-Start with the `scan` facade and stop-controller tests. Do not begin another
-provider rewrite until those user journeys and hard-budget semantics exist.
+The dashboard opens a loopback-only URL. No dashboard login is required.
+Choose free discovery or a supported hosted provider. Provider keys are entered
+for the server session only; restarting clears them. Do not expose or tunnel
+the dashboard: other local applications/users can access it.
+
+CLI examples, using only a domain you are authorized to assess:
+
+```bash
+enumeraite scan example.com
+enumeraite scan example.com --find 100 --tree
+enumeraite scan ny-01-iphone.example.com --tree
+enumeraite scan example.com --provider minimax --budget-usd 5 --vocabulary-breadth
+enumeraite scan example.com --resume --time 10m --max-candidates 5000 --rounds 20
+```
+
+See [Quick start](QUICKSTART.md) for scope, provider configuration, limits,
+pause/resume behavior and exports.
+
+## Implemented discovery workflow
+
+- Root-domain scans collect historical names from crt.sh, HackerTarget and an
+  optional installed, keyless subfinder. Failed, capped and timed-out sources
+  remain visible; public names are not findings until DNS verifies them.
+- Hostname input starts with that seed. An offline Public Suffix List resolves
+  registrable and private-hosting boundaries. Explicit `--scope`, `--seed`
+  and `--seeds` controls reject out-of-scope or over-depth input before work.
+  Seed-first scans skip passive collection and generic bootstrap by default.
+- Verified names supply evidence for bounded recursive discovery. Guesses,
+  wildcard results and inconclusive lookups are never treated as positive
+  model evidence. This is a feedback loop, not model-weight reinforcement learning.
+- Numeric families retain literal tokens and padding. Python generates changed
+  numeric slots within the configured ceiling (99 by default). Observed
+  IPv4-encoded families require supporting address evidence before applying
+  their specialized bounds. Numeric alternatives do not need model generation.
+- Shared immutable pattern indexes and lazy numeric-plan materialization avoid
+  repeatedly rebuilding large candidate pools. Parent and plan paging preserve
+  bounded exploration. Generic child labels sample representative hosts instead
+  of being repeated beneath every numeric sibling.
+- Hosted discovery uses up to three complementary, checkpointed passes per wave,
+  at most 20 names each, with capacity reserved for Python-generated candidates.
+  Verified cohorts rotate so one large family does not monopolize context.
+- MiniMax M3 subdomain generation uses a fast non-reasoning profile by default.
+  `providers.minimax.subdomain_thinking: default` restores server-default
+  reasoning. Other models, ordinary chat and path generation are unchanged.
+- Experimental `--vocabulary-breadth` / **Explore more naming patterns** is off
+  by default. An eligible third pass asks for words fitting immutable one-slot
+  layouts witnessed in verified names. Python owns structure, target scope,
+  exclusions and expansion. It replaces a pass rather than adding a fourth.
+  Empty or malformed paid answers do not trigger another paid fallback.
+- Jev plan ranking is a separate, optional, off-by-default adapter. Its prediction
+  ledger is additional to the generation ledger. It scores supplied plans; it
+  neither proves DNS existence nor replaces open-ended generation.
+- The dashboard shows DNS workers, provenance trees, inferred patterns,
+  searchable findings, activity, resource limits, method-result counts and
+  TXT/JSON/HTML exports. Method counts use the first-queued origin and are not
+  exclusive causal attribution. Tree edges show discovery inspiration, not
+  necessarily DNS delegation.
+- Older checkpoints remain supported. Vocabulary options, model-pass rotation,
+  cumulative spending, pending work and pattern paging survive resume.
+  Capability-gated frontend fields remain compatible with older running servers.
+
+## Resource and safety boundaries
+
+- A bare scan is free. Hosted inference requires explicit selection or an
+  explicit budget with a configured provider. Unknown model prices/custom
+  endpoints require explicit price overrides.
+- Shared limits cover total candidates, finding goals, rounds, time, DNS worker
+  concurrency, DNS rate, depth and numeric alternatives. New scans continue
+  through misses; `--until-stale` explicitly opts into an early no-hit stop.
+- Rate counters represent logical resolver calls, including wildcard probes;
+  resolver retries and transport fallback may produce additional packets.
+- DNS calibration treats partial failures, conflicting answers and inconsistent
+  wildcard probes conservatively. Address resolution does not establish HTTP
+  reachability or a specific application's existence.
+- Each model request durably reserves estimated cost before transmission.
+  Ambiguous outcomes retain conservative charges, with no automatic paid retry.
+  Reported usage beyond a reservation is recorded and stops later model calls.
+  Dollar amounts are token estimates, not provider invoices.
+- Successful model batches are saved before subsequent paid requests.
+  Exhausting the AI budget can leave free discovery running within other limits.
+- Tightening a numeric ceiling on resume leaves affected deterministic hypotheses
+  dormant; it does not ban user-supplied, passive or model names containing larger
+  numeric literals. Raising the limit can make dormant work eligible again.
+- Checkpoints are private regular files outside the repository by default.
+  Scope, counters, provider identity, metadata and budgets are validated before
+  resume; the dashboard also detects stale concurrent state.
+- Provider keys stay in memory, not browser storage, URLs, logs, checkpoints or
+  reports. Optional subfinder has isolated configuration and does not inherit
+  saved provider/model credentials.
+- Dashboard requests enforce loopback binding, strict Host/Origin checks,
+  bounded JSON input and a restrictive content policy. The service is not
+  designed for public or multi-user deployment.
+- Pause prevents new work; it cannot revoke an already-sent provider request.
+  Strict process-level cancellation of synchronous model calls remains future work.
+
+## Implementation map
+
+| Component | Location |
+|---|---|
+| CLI scan and dashboard launch | `src/enumeraite/cli/scan_command.py`, `ui_command.py` |
+| Sessions, queues and limits | `src/enumeraite/core/discovery_session.py` |
+| Public evidence and input scope | `core/passive.py`, `core/scan_input.py` |
+| DNS verification | `core/scan_dns.py` |
+| Patterns, numeric plans and context | `core/subdomain_patterns.py`, `discovery_plans.py`, `discovery_context.py` |
+| Optional vocabulary | `core/discovery_vocabulary.py`, `providers/llm_provider.py` |
+| Spending and saved state | `core/scan_budget.py`, `core/scan_state.py` |
+| Per-method accounting | `core/discovery_metrics.py` |
+| Optional plan ranking | `providers/jev.py` |
+| Local API and UI | `web/manager.py`, `web/server.py`, `web/assets/` |
+| Offline regression coverage | `tests/core/`, `tests/providers/`, `tests/cli/`, `tests/web/` |
+
+The earlier generation/path pipeline, OpenAPI benchmark support and provider
+presets remain available. See [Benchmarking](BENCHMARKING.md) for reproducible
+evaluation mechanics; public fixtures are not independent evidence of model
+generalization.
+
+## Verification
+
+The complete suite passed 1,410 tests on Python 3.10 and 3.14. Python 3.10
+coverage exceeded 86%. Tests include isolated frontend checks, simulated hosted
+responses, budget failures, checkpoint compatibility, numeric boundaries,
+wildcard calibration and subprocess isolation.
+
+Black, isort, Ruff, mypy and dependency consistency checks passed. Source and
+wheel builds include the new modules and all dashboard assets. No live API call
+or target scan is required to run the test suite.
+
+Repeat staged-tree and reachable-history secret checks before publication;
+a passing test suite or a clean working-directory scan alone is insufficient.
+
+## Next work
+
+1. Add configurable passive-source adapters with explicit credentials,
+   provider-specific limits, pagination, provenance and a data-access budget
+   separate from model spending. Do not silently enable paid source calls.
+2. Evaluate the production vocabulary option on multiple authorized domains
+   under fixed DNS, time and token budgets. Measure new verified names and
+   marginal contributions, not only candidate volume.
+3. Keep adaptive search inputs separate from held-out evaluation. Do not promote
+   negative, unverified or evaluation-only names into verified generation context.
+4. Improve large-tree navigation and family collapsing.
+5. Strengthen cancellation of already-running provider calls while retaining
+   durable accounting and avoiding retries of uncertain paid requests.
+6. Keep experimental scheduling and local decoding approaches optional until
+   matched tests demonstrate useful improvements. A local exact-token-ID fork
+   prototype now uses `llama.cpp` token arrays to compare alternate-token
+   continuations with independent sampling. Its fixture and reports remain in
+   ignored `bench-results/`; it is not a production feature. Evaluate verified
+   marginal yield across multiple authorized targets before enabling it.
+
+No discovery strategy guarantees additional names on every iteration or complete
+coverage. Research artifacts and target-specific results are intentionally not
+included in this handoff.

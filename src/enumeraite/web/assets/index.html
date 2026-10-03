@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Enumeraite · Discovery console</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Scan controls">
+        <a class="brand" href="/" aria-label="Enumeraite home"
+          ><span class="brand-mark" aria-hidden="true">e<span>_</span></span
+          ><span
+            >enumeraite<span class="brand-caption"
+              >DISCOVERY CONSOLE</span
+            ></span
+          ></a
+        >
+        <div class="local-label">
+          <span class="status-dot neutral"></span> LOCAL WORKSPACE
+          <span class="version">LIVE</span>
+        </div>
+        <form id="scan-form">
+          <div class="section-heading">
+            <h2>New discovery</h2>
+            <span class="section-index">01 / SETUP</span>
+          </div>
+          <label for="target">Domain or starting subdomain</label>
+          <div class="domain-input">
+            <span aria-hidden="true">◎</span
+            ><input
+              id="target"
+              name="target"
+              type="text"
+              placeholder="example.com or api.example.com"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              required
+              maxlength="253"
+            />
+          </div>
+          <p class="field-note">
+            Enter a root domain to discover known hosts, or a known subdomain to
+            explore related names.
+          </p>
+          <details class="seed-settings">
+            <summary>Add starting subdomains <span>optional</span></summary>
+            <label for="starting-seeds"
+              >Known hostnames <span>one per line</span></label
+            >
+            <textarea
+              id="starting-seeds"
+              rows="3"
+              maxlength="32000"
+              placeholder="ny-01-iphone.example.com&#10;ca-02-iphone.example.com"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              aria-describedby="seeds-note"
+            ></textarea>
+            <p class="field-note" id="seeds-note">
+              Use these as initial clues alongside your domain. Only
+              DNS-verified hosts guide new candidates.
+            </p>
+          </details>
+          <section
+            id="scope-preview"
+            class="scope-preview"
+            aria-label="Discovery scope preview"
+            aria-live="polite"
+          >
+            <div class="scope-preview-heading">
+              <span class="status-dot neutral"></span
+              ><span id="scope-preview-status">SCOPE PREVIEW</span>
+            </div>
+            <p id="scope-preview-target">Enter a domain or known hostname.</p>
+            <p id="scope-preview-seeds" hidden></p>
+            <p id="scope-preview-sources" hidden></p>
+            <p class="scope-preview-note" id="scope-preview-note">
+              This preview does not scan. Only assess domains and subdomains
+              you’re authorized to scan.
+            </p>
+          </section>
+          <div class="field-row">
+            <div>
+              <label for="goal">Finding goal <span>optional</span></label
+              ><input
+                id="goal"
+                type="number"
+                min="1"
+                max="50000"
+                placeholder="As many as possible"
+              />
+            </div>
+            <div>
+              <label for="duration">Time limit <span>minutes</span></label
+              ><input
+                id="duration"
+                type="number"
+                min="0.1"
+                max="1440"
+                step="any"
+                value="5"
+                required
+              />
+            </div>
+          </div>
+          <label for="provider">Discovery mode</label>
+          <select id="provider">
+            <option value="none">Free generation · evidence + patterns</option>
+            <option value="minimax">MiniMax · hosted AI discovery</option>
+            <option value="openai">OpenAI · hosted AI discovery</option>
+            <option value="anthropic">Anthropic · hosted AI discovery</option>
+          </select>
+          <p class="field-note" id="mode-note">
+            Start from public evidence or your own hostnames. Verified
+            discoveries guide the next round. No generation API key or
+            generation charges; optional plan ranking is billed separately.
+          </p>
+          <div id="ai-settings" hidden>
+            <div class="field-row">
+              <div>
+                <label for="model" id="model-label">MiniMax model</label
+                ><select id="model">
+                  <option value="MiniMax-M2.7">MiniMax M2.7</option>
+                  <option value="MiniMax-M3">MiniMax M3</option>
+                </select>
+              </div>
+              <div>
+                <label for="budget">Generation budget <span>USD</span></label
+                ><input
+                  id="budget"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value="1.00"
+                />
+              </div>
+            </div>
+            <div class="credential-card">
+              <div class="credential-heading">
+                <label for="api-key" id="key-label">MiniMax API key</label
+                ><span id="credential-status" class="small-status"
+                  >NOT SET</span
+                >
+              </div>
+              <input
+                id="api-key"
+                type="password"
+                placeholder="Paste your API key"
+                autocomplete="off"
+                spellcheck="false"
+                aria-describedby="key-note"
+              />
+              <div class="credential-actions">
+                <button id="save-key" type="button" class="button subtle">
+                  Save for session</button
+                ><button
+                  id="clear-key"
+                  type="button"
+                  class="button text-button"
+                >
+                  Clear
+                </button>
+              </div>
+              <p id="key-note" class="field-note">
+                Kept in this local server’s memory, never saved to disk or
+                browser storage. Used with the selected hosted provider only.
+                Changes apply to the next scan; a running scan may retain its
+                existing key.
+              </p>
+            </div>
+            <p class="field-note">
+              The dashboard is local; AI runs through the selected provider’s
+              API. Target names, verified hosts, and scan feedback are sent for
+              candidate generation. No local model required.
+            </p>
+            <p class="field-note">
+              Budget covers estimated model usage, not provider taxes or fees.
+              DNS discovery can continue when the AI budget runs out.
+            </p>
+          </div>
+          <details class="prediction-controls">
+            <summary>Plan ranking <span>optional · TypeSafe Jev</span></summary>
+            <label for="prediction-provider">Prediction layer</label>
+            <select id="prediction-provider">
+              <option value="none">Off · default plan ordering</option>
+              <option value="jev">TypeSafe Jev · prioritize plans</option>
+            </select>
+            <p class="field-note">
+              Optional guidance for which discovery plan to try next. Jev does
+              not generate hostnames and does not replace DNS verification.
+            </p>
+            <div id="prediction-settings" hidden>
+              <label for="prediction-budget"
+                >Additional prediction budget <span>USD</span></label
+              >
+              <input
+                id="prediction-budget"
+                type="number"
+                min="0"
+                step="any"
+                value="0.05"
+                disabled
+              />
+              <p class="prediction-cost-note">
+                Separate from—and additional to—candidate-generation costs. Uses
+                TypeSafe’s fixed jev-1.13.0 model.
+              </p>
+              <div class="credential-card">
+                <div class="credential-heading">
+                  <label for="prediction-api-key">TypeSafe API key</label
+                  ><span id="prediction-credential-status" class="small-status"
+                    >NOT SET</span
+                  >
+                </div>
+                <input
+                  id="prediction-api-key"
+                  type="password"
+                  placeholder="Paste your TypeSafe API key"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-describedby="prediction-key-note"
+                />
+                <div class="credential-actions">
+                  <button
+                    id="save-prediction-key"
+                    type="button"
+                    class="button subtle"
+                  >
+                    Save for session</button
+                  ><button
+                    id="clear-prediction-key"
+                    type="button"
+                    class="button text-button"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <p id="prediction-key-note" class="field-note">
+                  A separate TypeSafe account/key is required. Kept only in
+                  local server memory, never written to disk or browser storage.
+                  Changes apply to future scans; a running scan may retain its
+                  existing key.
+                </p>
+              </div>
+              <p class="field-note">
+                Enabling Jev sends bounded target context, verified hostnames,
+                proposed plans, and DNS outcomes to TypeSafe for ranking. It
+                uses a hosted API, not a local model.
+              </p>
+              <p class="field-note">
+                Scores are predicted priorities—not DNS existence probabilities.
+                If scoring is unavailable or its budget runs out, discovery can
+                use the default ordering.
+              </p>
+            </div>
+          </details>
+          <details class="advanced-settings">
+            <summary>
+              Scan settings <span>Scope, sources &amp; limits</span>
+            </summary>
+            <label for="discovery-scope"
+              >Discovery scope <span>optional override</span></label
+            >
+            <input
+              id="discovery-scope"
+              type="text"
+              placeholder="Automatic from your input"
+              maxlength="253"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              aria-describedby="scope-note"
+            />
+            <p class="field-note" id="scope-note">
+              Restrict discovery to a specific zone, such as dev.example.com.
+              Your input and starting hosts must belong to this scope.
+            </p>
+            <label for="passive">Public-source discovery</label>
+            <select id="passive">
+              <option value="auto">Automatic · collect when no seed</option>
+              <option value="collect">Also collect known hosts</option>
+              <option value="skip">Skip public-source discovery</option>
+            </select>
+            <p class="field-note">
+              Automatic mode skips public sources when you provide a starting
+              hostname. Otherwise it checks crt.sh, HackerTarget, and subfinder
+              if installed.
+            </p>
+            <div class="field-row">
+              <div>
+                <label for="candidates">Candidate limit</label
+                ><input
+                  id="candidates"
+                  type="number"
+                  min="1"
+                  max="50000"
+                  value="1000"
+                  required
+                />
+              </div>
+              <div>
+                <label for="rounds">Max rounds</label
+                ><input
+                  id="rounds"
+                  type="number"
+                  min="1"
+                  max="100"
+                  value="10"
+                  required
+                />
+              </div>
+            </div>
+            <div class="field-row">
+              <div>
+                <label for="workers">Concurrent workers</label
+                ><input
+                  id="workers"
+                  type="number"
+                  min="1"
+                  max="100"
+                  value="20"
+                  required
+                />
+              </div>
+              <div>
+                <label for="rate">DNS queries / sec</label
+                ><input
+                  id="rate"
+                  type="number"
+                  min="0.1"
+                  max="1000"
+                  step="any"
+                  value="50"
+                  required
+                />
+              </div>
+            </div>
+            <label for="depth">Max discovery depth</label
+            ><input
+              id="depth"
+              type="number"
+              min="1"
+              max="10"
+              value="4"
+              required
+            />
+            <div id="vocabulary-breadth-option" hidden>
+              <label class="checkbox-label" for="vocabulary-breadth">
+                <input id="vocabulary-breadth" type="checkbox" />
+                Explore more naming patterns <span>experimental</span>
+              </label>
+              <p class="field-note">
+                With hosted AI enabled, use some existing AI passes to suggest
+                related words for patterns supported by verified names. Python
+                builds bounded combinations; DNS checks them. Uses the same AI
+                budget, and may not help every target.
+              </p>
+            </div>
+          </details>
+          <button class="button primary start-button" id="start" type="submit">
+            <span aria-hidden="true">↗</span> Start discovery
+          </button>
+        </form>
+        <section class="history-section" aria-labelledby="history-heading">
+          <div class="section-heading">
+            <h2 id="history-heading">Your scans</h2>
+            <span class="section-index">THIS SERVER</span>
+          </div>
+          <label class="sr-only" for="scan-history">Select a scan</label
+          ><select id="scan-history">
+            <option value="">No scans yet</option>
+          </select>
+          <p class="field-note">
+            Scan checkpoints stay local. Pause and resume without repeating
+            completed checks.
+          </p>
+        </section>
+        <div class="sidebar-footer">
+          <span class="mini-cross" aria-hidden="true">+</span> FROM SIGNAL TO
+          DISCOVERY <span class="mini-cross" aria-hidden="true">+</span>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-header">
+          <div class="breadcrumb">
+            <span class="breadcrumb-square" aria-hidden="true"></span> WORKSPACE
+            <span>/</span> LIVE DISCOVERY
+          </div>
+          <div id="connection" class="connection">
+            <span class="status-dot neutral"></span><span>Connecting</span>
+          </div>
+        </header>
+        <div id="notice" role="alert" hidden>
+          <span id="notice-text"></span
+          ><button
+            id="dismiss-notice"
+            class="icon-button"
+            aria-label="Dismiss notification"
+          >
+            ×
+          </button>
+        </div>
+        <section class="scan-heading">
+          <div>
+            <div class="eyebrow">ENUMERATE. UNDERSTAND. EXPAND.</div>
+            <h1 id="scan-target">
+              Map what’s out there<span class="title-period">.</span>
+            </h1>
+            <p id="scan-description">
+              Start with a domain or known host. Follow the patterns. Watch
+              discoveries take shape.
+            </p>
+          </div>
+          <div class="scan-actions">
+            <span class="status-pill" id="scan-status">READY TO DISCOVER</span
+            ><button class="button subtle" id="pause" hidden>Pause scan</button
+            ><button class="button primary" id="resume" hidden>
+              Resume scan
+            </button>
+          </div>
+        </section>
+        <nav class="phase-stepper" aria-label="Discovery progress">
+          <div data-phase="known">
+            <span class="phase-number">01</span
+            ><span>Gather starting evidence</span>
+          </div>
+          <span class="phase-line"></span>
+          <div data-phase="verify">
+            <span class="phase-number">02</span><span>Verify DNS</span>
+          </div>
+          <span class="phase-line"></span>
+          <div data-phase="expand">
+            <span class="phase-number">03</span><span>Learn &amp; expand</span>
+          </div>
+          <span class="phase-line"></span>
+          <div data-phase="complete">
+            <span class="phase-number">04</span><span>Review results</span>
+          </div>
+        </nav>
+        <section class="metrics" aria-label="Scan statistics">
+          <div class="metric metric-featured">
+            <div class="metric-label">
+              VERIFIED HOSTS <span class="live-spark" aria-hidden="true"></span>
+            </div>
+            <div class="metric-value" id="metric-verified">0</div>
+            <div class="metric-caption">
+              <span id="metric-known">0</span> known
+              <span class="caption-divider">/</span>
+              <span id="metric-new">0</span> discovered
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">DNS CHECKS</div>
+            <div class="metric-value" id="metric-attempted">0</div>
+            <div class="metric-caption">
+              <span id="metric-queued">0</span> candidates queued
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">ACTIVE WORK</div>
+            <div class="metric-value" id="metric-active">
+              0<span class="metric-unit">queries</span>
+            </div>
+            <div class="metric-caption">
+              Round <span id="metric-round">0</span>
+              <span class="caption-divider">/</span> shared rate limit
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">GENERATION SPEND</div>
+            <div class="metric-value" id="metric-spent">$0.00</div>
+            <div class="metric-caption" id="metric-budget">
+              No generation charges
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">ELAPSED</div>
+            <div class="metric-value" id="metric-time">00:00</div>
+            <div class="metric-caption" id="metric-stop">
+              Waiting for a target
+            </div>
+          </div>
+        </section>
+        <section
+          id="prediction-spend-panel"
+          class="prediction-spend-panel"
+          aria-label="Additional prediction costs"
+          hidden
+        >
+          <div>
+            <span class="prediction-service-label"
+              >TYPESAFE / JEV PLAN RANKING</span
+            >
+            <p>
+              Additional to generation costs ·
+              <span id="prediction-model">jev-1.13.0</span>
+            </p>
+          </div>
+          <div class="prediction-spend-values">
+            <strong id="prediction-spent">$0.00</strong
+            ><span id="prediction-cap">of $0.05 prediction cap</span
+            ><span id="prediction-reserved" hidden></span>
+          </div>
+          <button id="show-predictions" class="button tiny">
+            View priorities
+          </button>
+        </section>
+        <div class="live-workspace">
+          <section class="panel graph-panel" aria-labelledby="graph-title">
+            <div class="panel-header">
+              <div>
+                <h2 id="graph-title">
+                  <span class="red-square" aria-hidden="true"></span> Discovery
+                  map
+                </h2>
+                <p>
+                  Branches show which discovery inspired the next candidate.
+                </p>
+              </div>
+              <span id="graph-count" class="panel-tag">0 NODES</span>
+            </div>
+            <div class="graph-toolbar">
+              <label class="toggle-label"
+                ><input type="checkbox" id="graph-verified" /> Verified
+                only</label
+              >
+              <div class="zoom-controls">
+                <button id="focus-active" class="button tiny">Focus work</button
+                ><button
+                  id="zoom-out"
+                  class="icon-button"
+                  aria-label="Zoom out"
+                >
+                  −</button
+                ><span id="zoom-level">100%</span
+                ><button id="zoom-in" class="icon-button" aria-label="Zoom in">
+                  +</button
+                ><button id="fit-graph" class="button tiny">Fit map</button>
+              </div>
+            </div>
+            <div id="graph-surface" class="graph-surface">
+              <svg
+                id="discovery-graph"
+                xmlns="http://www.w3.org/2000/svg"
+                role="group"
+                aria-label="Discovery tree. Select a node for details. Use the findings list below as a text alternative."
+              >
+                <g id="graph-layer"></g>
+              </svg>
+              <div id="graph-empty" class="graph-empty">
+                <div class="empty-map" aria-hidden="true">
+                  <span class="empty-node node-root"></span
+                  ><span class="empty-stem"></span
+                  ><span class="empty-branch"></span
+                  ><span class="empty-node node-left"></span
+                  ><span class="empty-node node-middle"></span
+                  ><span class="empty-node node-right"></span>
+                </div>
+                <h3>A domain. A thousand possibilities.</h3>
+                <p>
+                  Your discovery map will grow here.<br />Verified hosts become
+                  clues for the next search.
+                </p>
+                <span class="empty-badge">AWAITING FIRST SIGNAL</span>
+              </div>
+              <div class="graph-hint">
+                Drag to pan · Select a node to inspect
+              </div>
+            </div>
+            <div class="graph-footer">
+              <div class="legend">
+                <span><i class="legend-dot verified"></i>Verified</span
+                ><span><i class="legend-dot active"></i>Checking</span
+                ><span><i class="legend-dot pending"></i>Queued</span
+                ><span><i class="legend-dot miss"></i>Not found</span
+                ><span
+                  ><i class="legend-dot wildcard"></i>Wildcard / uncertain</span
+                >
+              </div>
+              <p id="graph-limit" hidden></p>
+            </div>
+          </section>
+          <aside class="activity-column">
+            <section
+              class="panel workers-panel"
+              aria-labelledby="workers-title"
+            >
+              <div class="panel-header">
+                <h2 id="workers-title">
+                  On the wire
+                  <span id="worker-count" class="count-badge">0</span>
+                </h2>
+                <span class="panel-tag" id="worker-state">IDLE</span>
+              </div>
+              <div id="worker-list" class="worker-list">
+                <div class="compact-empty">
+                  <span class="radar-symbol" aria-hidden="true">◎</span>
+                  <p>Nothing in flight yet</p>
+                  <span>Live DNS queries will appear here.</span>
+                </div>
+              </div>
+              <div class="worker-footer">
+                <span class="status-dot neutral"></span
+                ><span id="worker-footer-text"
+                  >No synthetic activity. These are actual in-flight
+                  queries.</span
+                >
+              </div>
+            </section>
+            <section class="panel node-panel" aria-labelledby="node-title">
+              <div class="panel-header">
+                <h2 id="node-title">Under the lens</h2>
+                <span class="panel-tag">NODE DETAILS</span>
+              </div>
+              <div id="node-details" class="node-details">
+                <p class="muted">
+                  Select a node on the map or a hostname in the findings list to
+                  see its origin, pattern, and DNS evidence.
+                </p>
+              </div>
+            </section>
+          </aside>
+        </div>
+        <section class="panel results-panel">
+          <div class="results-header">
+            <div class="tabs" role="tablist" aria-label="Discovery details">
+              <button
+                id="tab-findings"
+                class="tab active"
+                role="tab"
+                aria-selected="true"
+                aria-controls="findings-panel"
+                data-tab="findings"
+              >
+                Findings
+                <span id="finding-count" class="count-badge">0</span></button
+              ><button
+                id="tab-patterns"
+                class="tab"
+                role="tab"
+                aria-selected="false"
+                aria-controls="patterns-panel"
+                tabindex="-1"
+                data-tab="patterns"
+              >
+                Patterns
+                <span id="pattern-count" class="count-badge">0</span></button
+              ><button
+                id="tab-predictions"
+                class="tab"
+                role="tab"
+                aria-selected="false"
+                aria-controls="predictions-panel"
+                tabindex="-1"
+                data-tab="predictions"
+              >
+                Plan priorities
+                <span id="prediction-count" class="count-badge">0</span></button
+              ><button
+                id="tab-timeline"
+                class="tab"
+                role="tab"
+                aria-selected="false"
+                aria-controls="timeline-panel"
+                tabindex="-1"
+                data-tab="timeline"
+              >
+                Activity log
+              </button>
+            </div>
+            <div class="export-controls">
+              <label class="sr-only" for="export-format">Export format</label
+              ><select id="export-format">
+                <option value="txt">Hostnames (.txt)</option>
+                <option value="json">Full report (.json)</option>
+                <option value="html">Tree report (.html)</option></select
+              ><button id="export" class="button subtle" disabled>
+                <span aria-hidden="true">↓</span> Export
+              </button>
+            </div>
+          </div>
+          <div
+            id="findings-panel"
+            role="tabpanel"
+            aria-labelledby="tab-findings"
+          >
+            <div class="findings-toolbar">
+              <div class="search-box">
+                <span aria-hidden="true">⌕</span
+                ><label class="sr-only" for="findings-search"
+                  >Search hostnames or addresses</label
+                ><input
+                  id="findings-search"
+                  type="search"
+                  placeholder="Search hostnames or IP addresses…"
+                  autocomplete="off"
+                />
+              </div>
+              <label class="sr-only" for="findings-filter"
+                >Filter by status</label
+              ><select id="findings-filter">
+                <option value="verified">Verified hosts</option>
+                <option value="all">All candidates</option>
+                <option value="pending">Queued</option>
+                <option value="miss">Not found</option>
+                <option value="inconclusive">Inconclusive</option>
+                <option value="wildcard">Wildcard</option>
+              </select>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hostname</th>
+                    <th>Status</th>
+                    <th>Origin</th>
+                    <th>DNS evidence</th>
+                  </tr>
+                </thead>
+                <tbody id="findings-body"></tbody>
+              </table>
+              <div id="findings-empty" class="table-empty">
+                Verified discoveries will appear here as the scan progresses.
+              </div>
+            </div>
+            <div class="table-pagination">
+              <span id="findings-total">0 findings</span>
+              <div>
+                <button id="findings-prev" class="button tiny" disabled>
+                  Previous</button
+                ><span id="findings-page">1 / 1</span
+                ><button id="findings-next" class="button tiny" disabled>
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+          <div
+            id="patterns-panel"
+            role="tabpanel"
+            aria-labelledby="tab-patterns"
+            hidden
+          >
+            <div class="tab-intro">
+              Patterns are evidence-informed hypotheses, not guarantees.
+              Candidates only become findings after DNS verification.
+            </div>
+            <details id="discovery-methods" class="discovery-methods">
+              <summary>Which methods are finding names?</summary>
+              <p class="method-note">
+                Each name belongs to the method that first queued it. Checked
+                counts unique names, not retries or DNS packets. Unresolved
+                lookups and wildcard responses are not confirmed findings.
+              </p>
+              <div class="table-scroll">
+                <table aria-label="Discovery results by method">
+                  <thead><tr>
+                    <th scope="col">Method</th><th scope="col">Queued</th>
+                    <th scope="col">Checked</th><th scope="col">Verified</th>
+                    <th scope="col">Misses</th><th scope="col">Unresolved</th>
+                    <th scope="col">Wildcard</th>
+                  </tr></thead>
+                  <tbody id="discovery-method-rows"></tbody>
+                </table>
+              </div>
+              <p id="discovery-method-empty" class="method-note">
+                Method results will appear as candidates are queued.
+              </p>
+            </details>
+            <div id="patterns-list" class="patterns-list">
+              <div class="table-empty">
+                Patterns will emerge from verified hosts.
+              </div>
+            </div>
+          </div>
+          <div
+            id="predictions-panel"
+            role="tabpanel"
+            aria-labelledby="tab-predictions"
+            hidden
+          >
+            <div class="tab-intro">
+              Jev predicts which discovery plans to prioritize. Scores estimate
+              plan usefulness on a 0–1 scale, not probabilities that specific
+              hostnames exist. DNS verification remains the source of evidence.
+            </div>
+            <div id="predictions-list" class="predictions-list">
+              <div class="table-empty">
+                No prediction layer is enabled. Jev can be selected separately
+                when starting a new scan.
+              </div>
+            </div>
+          </div>
+          <div
+            id="timeline-panel"
+            role="tabpanel"
+            aria-labelledby="tab-timeline"
+            hidden
+          >
+            <div class="tab-intro">
+              A live record of the scanner’s work. Activity is shown exactly as
+              reported by the engine.
+            </div>
+            <ol id="timeline" class="timeline">
+              <li class="table-empty">No scan activity yet.</li>
+            </ol>
+          </div>
+        </section>
+        <section
+          id="warnings-panel"
+          class="warnings-panel"
+          hidden
+          aria-labelledby="warnings-title"
+        >
+          <h2 id="warnings-title">Scan notes</h2>
+          <ul id="warnings-list"></ul>
+        </section>
+        <footer class="workspace-footer">
+          <span
+            >ENUMERAITE <span class="footer-slash">/</span> INTELLIGENCE STARTS
+            WITH ENUMERATION</span
+          ><span>Local-first. Evidence-led.</span>
+        </footer>
+        <div
+          id="live-announcement"
+          class="sr-only"
+          role="status"
+          aria-live="polite"
+        ></div>
+      </main>
+    </div>
+    <dialog
+      id="resume-dialog"
+      class="resume-dialog"
+      aria-labelledby="resume-title"
+      aria-describedby="resume-description"
+    >
+      <form id="resume-form">
+        <div class="dialog-heading">
+          <div>
+            <div class="eyebrow">PICK UP THE NEXT CLUE</div>
+            <h2 id="resume-title">Continue discovery</h2>
+          </div>
+          <button
+            type="button"
+            id="close-resume"
+            class="icon-button"
+            aria-label="Close resume settings"
+          >
+            ×
+          </button>
+        </div>
+        <p id="resume-description" class="dialog-description">
+          Keep existing evidence and adjust the limits for your next run.
+          Completed checks are not repeated.
+        </p>
+        <div id="resume-evidence" class="resume-evidence"></div>
+        <div class="field-row">
+          <div>
+            <label for="resume-candidates"
+              >Candidate cap <span>scan total</span></label
+            ><input
+              id="resume-candidates"
+              type="number"
+              min="1"
+              max="50000"
+              required
+            />
+          </div>
+          <div>
+            <label for="resume-goal">Finding goal <span>scan total</span></label
+            ><input
+              id="resume-goal"
+              type="number"
+              min="1"
+              max="50000"
+              placeholder="No finding goal"
+            />
+          </div>
+        </div>
+        <div class="field-row">
+          <div>
+            <label for="resume-duration"
+              >Time limit <span>this run / min</span></label
+            ><input
+              id="resume-duration"
+              type="number"
+              min="0.1"
+              max="1440"
+              step="any"
+              required
+            />
+          </div>
+          <div>
+            <label for="resume-rounds">Round cap <span>scan total</span></label
+            ><input
+              id="resume-rounds"
+              type="number"
+              min="1"
+              max="100"
+              required
+            />
+          </div>
+        </div>
+        <div id="resume-budget-row">
+          <label for="resume-budget"
+            >Generation budget <span>scan total / USD</span></label
+          ><input id="resume-budget" type="number" min="0" step="any" />
+          <p class="field-note" id="resume-budget-note">
+            Previous spending counts toward this total. The budget does not
+            reset.
+          </p>
+        </div>
+        <div id="resume-prediction-budget-row" hidden>
+          <label for="resume-prediction-budget"
+            >Additional Jev prediction budget
+            <span>scan total / USD</span></label
+          >
+          <input
+            id="resume-prediction-budget"
+            type="number"
+            min="0"
+            step="any"
+          />
+          <p id="resume-prediction-budget-note" class="field-note">
+            Separate from generation charges. Previous prediction spending
+            counts toward this total.
+          </p>
+          <p class="field-note">
+            This scan keeps its existing Jev ranking layer. Prediction providers
+            cannot be added, removed, or changed on resume.
+          </p>
+        </div>
+        <p class="field-note">
+          Increase a reached candidate, finding, or round cap to continue beyond
+          it. Leaving the finding goal empty removes that stop condition. The
+          time limit starts fresh for this run.
+        </p>
+        <p id="resume-error" class="dialog-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancel-resume" type="button" class="button subtle">
+            Cancel</button
+          ><button type="submit" class="button primary">
+            Resume discovery <span aria-hidden="true">↗</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

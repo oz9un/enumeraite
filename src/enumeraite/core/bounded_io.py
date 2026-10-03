@@ -16,6 +16,7 @@ def read_bounded_regular_file(
     *,
     not_regular_message: str = "input path must be a regular file",
     too_large_message: str = "input file exceeds the byte limit",
+    no_follow: bool = False,
 ) -> bytes:
     """Read one regular file object under a hard byte limit.
 
@@ -28,6 +29,8 @@ def read_bounded_regular_file(
         raise ValueError("max_bytes must be a positive integer")
 
     flags = os.O_RDONLY
+    if no_follow:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
     for flag_name in ("O_BINARY", "O_CLOEXEC", "O_NOINHERIT", "O_NONBLOCK"):
         flags |= getattr(os, flag_name, 0)
 

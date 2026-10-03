@@ -10,7 +10,9 @@ from .commands import analyze, generate
 from .doctor_command import doctor_command
 from .royale_command import royale_command
 from .run_command import run_command
+from .scan_command import scan_command
 from .ui import Colors, print_startup_banner
+from .ui_command import ui_command
 
 
 class EnumeraiteGroup(click.Group):
@@ -69,6 +71,13 @@ class EnumeraiteGroup(click.Group):
         click.echo()
 
         examples = [
+            ("enumeraite", "ui", "", "Open the live discovery dashboard"),
+            (
+                "enumeraite",
+                "scan",
+                "example.com --tree",
+                "Discover known names and recursively expand patterns",
+            ),
             ("enumeraite", "run", "seeds.txt", "Auto-detect kind and provider"),
             (
                 "enumeraite",
@@ -159,6 +168,8 @@ def cli(ctx):
 cli.add_command(generate)
 cli.add_command(analyze)
 cli.add_command(run_command)
+cli.add_command(scan_command)
+cli.add_command(ui_command)
 cli.add_command(doctor_command)
 cli.add_command(bench_command)
 cli.add_command(royale_command)

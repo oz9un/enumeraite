@@ -10,6 +10,14 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 from ..core.candidate_pool import structural_candidates
 from ..core.context import collect_context
+from ..core.discovery_vocabulary import (
+    VOCABULARY_PROTOCOL_VERSION,
+    VocabularyLayout,
+    expand_vocabulary_response,
+    validate_vocabulary_layouts,
+    vocabulary_exclusions,
+    vocabulary_prompt,
+)
 from ..core.models import GenerationResult
 from ..core.prompt_spec import Candidate, spec_for
 from ..core.provider import BaseProvider
@@ -29,15 +37,31 @@ class ChatResult:
     model: str = ""
     finish_reason: str = ""
     reasoning_tokens: int = 0
+    usage_complete: bool = True
+    requested_thinking_mode: str = ""
 
     def __post_init__(self) -> None:
         """Keep backend telemetry finite, nonnegative, and reasonably bounded."""
+        valid_usage = all(
+            isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 1_000_000_000
+            for value in (
+                self.input_tokens,
+                self.output_tokens,
+                self.cached_input_tokens,
+                self.reasoning_tokens,
+            )
+        )
+        if valid_usage:
+            valid_usage = self.cached_input_tokens <= self.input_tokens
         self.input_tokens = _safe_telemetry_count(self.input_tokens)
         self.cached_input_tokens = min(
             self.input_tokens, _safe_telemetry_count(self.cached_input_tokens)
         )
         self.output_tokens = _safe_telemetry_count(self.output_tokens)
         self.reasoning_tokens = _safe_telemetry_count(self.reasoning_tokens)
+        self.usage_complete = self.usage_complete is True and valid_usage
+        if self.requested_thinking_mode not in ("default", "disabled"):
+            self.requested_thinking_mode = ""
 
 
 class LLMProvider(BaseProvider):
@@ -64,12 +88,39 @@ class LLMProvider(BaseProvider):
         self.seed_char_limit = _bounded_int(
             "seed_char_limit", config.get("seed_char_limit", 50_000), 1_000, 1_000_000
         )
+        self.subdomain_thinking = config.get("subdomain_thinking", "disabled")
+        if not isinstance(self.subdomain_thinking, str) or self.subdomain_thinking not in {
+            "default",
+            "disabled",
+        }:
+            raise ValueError("subdomain_thinking must be 'default' or 'disabled'")
         self._runtime_context = ""
         self._runtime_exclusions: List[str] = []
+        self._runtime_batch_limit: Optional[int] = None
+        self._runtime_generation_kind: Optional[str] = None
+        self._runtime_single_request = False
+        self._scan_guard_attached = False
 
     @abstractmethod
     def chat(self, system: str, user: str, schema: Optional[dict[str, Any]]) -> ChatResult:
         """Send a chat request and return a backend-neutral result."""
+
+    def _chat_for_discovery(
+        self, kind: str, system: str, user: str, schema: Optional[dict[str, Any]]
+    ) -> ChatResult:
+        """Scope request profiles without bypassing an attached chat budget guard.
+
+        Providers already carry per-scan mutable feedback and are used serially.
+        Restore the prior scope for nested calls and every exceptional exit.
+        """
+        if kind not in {"path", "subdomain"}:
+            raise ValueError("discovery kind must be 'path' or 'subdomain'")
+        previous = self._runtime_generation_kind
+        self._runtime_generation_kind = kind
+        try:
+            return self.chat(system, user, schema)
+        finally:
+            self._runtime_generation_kind = previous
 
     def set_runtime_context(self, value: str = "") -> None:
         """Set ephemeral feedback context for the next generation round."""
@@ -78,6 +129,17 @@ class LLMProvider(BaseProvider):
     def set_runtime_exclusions(self, values: Sequence[str] = ()) -> None:
         """Exclude candidates already spent in earlier feedback rounds."""
         self._runtime_exclusions = list(dict.fromkeys(str(value) for value in values if value))
+
+    def set_runtime_batch_limit(self, limit: Optional[int] = None) -> None:
+        """Temporarily cap generation chat calls without changing provider configuration.
+
+        Discovery sessions can request one batch and checkpoint its candidates
+        before beginning another paid call. Clear the cap with ``None`` when
+        the scoped operation finishes; existing per-request limits still apply.
+        """
+        self._runtime_batch_limit = (
+            None if limit is None else _bounded_int("runtime_batch_limit", limit, 1, 100)
+        )
 
     def generate_paths(
         self,
@@ -152,6 +214,7 @@ class LLMProvider(BaseProvider):
         response_model = self.model
         finish_reasons: List[str] = []
         reasoning_tokens = 0
+        requested_thinking_modes: List[str] = []
         parse_empty_calls = 0
         adaptive_batch_size = self.batch_size
         if self.use_hybrid:
@@ -193,9 +256,12 @@ class LLMProvider(BaseProvider):
             if model_budget
             else 0
         )
+        if self._runtime_batch_limit is not None:
+            call_budget = min(call_budget, self._runtime_batch_limit)
         while model_accepted < model_budget and calls < call_budget and empty_calls < 3:
             batch_count = min(adaptive_batch_size, model_budget - model_accepted)
-            response = self.chat(
+            response = self._chat_for_discovery(
+                kind,
                 spec.system(),
                 spec.user(
                     prompt_known,
@@ -217,6 +283,13 @@ class LLMProvider(BaseProvider):
             response_model = response.model or response_model
             finish_reasons.append(response.finish_reason)
             reasoning_tokens += response.reasoning_tokens
+            requested_thinking_mode = getattr(response, "requested_thinking_mode", "")
+            if (
+                isinstance(requested_thinking_mode, str)
+                and requested_thinking_mode in {"default", "disabled"}
+                and requested_thinking_mode not in requested_thinking_modes
+            ):
+                requested_thinking_modes.append(requested_thinking_mode)
             parsed = spec.parse(response.text)
             if not parsed:
                 parse_empty_calls += 1
@@ -300,6 +373,11 @@ class LLMProvider(BaseProvider):
                 "parse_empty_calls": parse_empty_calls,
                 "finish_reasons": finish_reasons,
                 "reasoning_tokens": reasoning_tokens,
+                **(
+                    {"requested_thinking_modes": requested_thinking_modes}
+                    if requested_thinking_modes
+                    else {}
+                ),
                 "fill_rate": len(candidates) / requested,
                 "token_usage": {
                     "input_tokens": input_tokens,
@@ -308,6 +386,104 @@ class LLMProvider(BaseProvider):
                     "total_tokens": total_tokens,
                 },
             },
+        )
+
+    def generate_subdomain_vocabulary(
+        self,
+        layouts: tuple[VocabularyLayout, ...],
+        target: str,
+        count: int,
+        *,
+        instructions: str = "",
+        exclusions: Sequence[str] = (),
+    ) -> GenerationResult:
+        """One guarded optional vocabulary request; all output remains hypotheses.
+
+        Selection between this method and ordinary detailed generation happens
+        before calling it. Empty/malformed answers never cause a paid retry or
+        fallback. In particular, this must call the possibly monkeypatched
+        public chat through _chat_for_discovery, not a backend implementation.
+        """
+        requested = _bounded_int("count", count, 1, 200)
+        layouts = validate_vocabulary_layouts(layouts, target)
+        explicit = vocabulary_exclusions(exclusions, target)
+        runtime = vocabulary_exclusions(self._runtime_exclusions, target)
+        excluded = tuple(dict.fromkeys((*explicit, *runtime)))
+        system, user, schema = vocabulary_prompt(
+            layouts, target, requested, instructions=instructions, exclusions=excluded
+        )
+        metadata: dict[str, Any] = {
+            "provider": self.get_provider_name(),
+            "model": self.model,
+            "target": target,
+            "kind": "subdomain",
+            "protocol": "grounded-one-slot-vocabulary",
+            "vocabulary_protocol_version": VOCABULARY_PROTOCOL_VERSION,
+            "requested": requested,
+            "generated": 0,
+            "batch_calls": 0,
+            "layout_count": len(layouts),
+            "verified": False,
+            "rationales": {},
+            "candidate_sources": {},
+            "provenance": {},
+            "rejections": {},
+            "token_usage": {
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+        }
+        if not layouts:
+            metadata["model_skipped_reason"] = "no_witnessed_vocabulary_layouts"
+            return GenerationResult(paths=[], confidence_scores=[], metadata=metadata)
+        previous_single_request = self._runtime_single_request
+        self._runtime_single_request = True
+        try:
+            response = self._chat_for_discovery("subdomain", system, user, schema)
+        finally:
+            self._runtime_single_request = previous_single_request
+        # Capture actual response usage even if every output item is invalid.
+        metadata.update(
+            {
+                "model": response.model or self.model,
+                "batch_calls": 1,
+                "finish_reasons": [response.finish_reason],
+                "reasoning_tokens": response.reasoning_tokens,
+                "usage_complete": getattr(response, "usage_complete", True),
+                "token_usage": {
+                    "input_tokens": response.input_tokens,
+                    "cached_input_tokens": response.cached_input_tokens,
+                    "output_tokens": response.output_tokens,
+                    "total_tokens": response.input_tokens + response.output_tokens,
+                },
+            }
+        )
+        mode = getattr(response, "requested_thinking_mode", "")
+        if isinstance(mode, str) and mode in {"default", "disabled"}:
+            metadata["requested_thinking_modes"] = [mode]
+        candidates, diagnostics = expand_vocabulary_response(
+            response.text, layouts, target, requested, exclusions=excluded
+        )
+        metadata.update(diagnostics)
+        metadata.update(
+            {
+                "generated": len(candidates),
+                "fill_rate": len(candidates) / requested,
+                "rationales": {item["value"]: item["reason"] for item in candidates},
+                "candidate_sources": {item["value"]: "model-vocabulary" for item in candidates},
+                "provenance": {
+                    item["value"]: {key: value for key, value in item.items() if key != "value"}
+                    for item in candidates
+                },
+                "confidence_note": "Uniform 0.5 is an uncalibrated ranking placeholder, not existence probability.",
+            }
+        )
+        return GenerationResult(
+            paths=[item["value"] for item in candidates],
+            confidence_scores=[0.5] * len(candidates),
+            metadata=metadata,
         )
 
     def _make_api_call(self, system_prompt: str, user_prompt: str) -> str:

@@ -100,6 +100,16 @@ class OpenAICompatibleProvider(LLMProvider):
         self.client = openai.OpenAI(**client_args)
 
     def chat(self, system: str, user: str, schema: Optional[dict[str, Any]]) -> ChatResult:
+        # The fast profile is intentionally narrow: M2.7 and other backends
+        # need not support this extension, and ordinary chat/path tasks retain
+        # their existing behavior. "default" opts into the server's default.
+        requested_thinking_mode = (
+            self.subdomain_thinking
+            if self.preset == "minimax"
+            and self.model == "MiniMax-M3"
+            and self._runtime_generation_kind == "subdomain"
+            else ""
+        )
         base_args: dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -113,6 +123,8 @@ class OpenAICompatibleProvider(LLMProvider):
             # endpoint and can split reasoning away from the JSON response.
             base_args["max_completion_tokens"] = self.max_tokens
             base_args["extra_body"] = {"reasoning_split": True}
+            if requested_thinking_mode == "disabled":
+                base_args["extra_body"]["thinking"] = {"type": "disabled"}
         else:
             base_args["max_tokens"] = self.max_tokens
         enhanced = dict(base_args)
@@ -124,16 +136,28 @@ class OpenAICompatibleProvider(LLMProvider):
         if self.confidence_mode == "logprob" and self.preset != "minimax":
             enhanced["logprobs"] = True
 
+        client = self.client
+        if self._scan_guard_attached or self._runtime_single_request:
+            client = self.client.with_options(timeout=self.request_timeout, max_retries=0)
         try:
-            response = self.client.chat.completions.create(**enhanced)
+            response = client.chat.completions.create(**enhanced)
         except Exception as exc:
             # Several local compatibility servers reject response_format or
             # logprobs even though they otherwise implement chat completions.
-            if enhanced == base_args or not _extensions_rejected(exc):
+            if (
+                self._scan_guard_attached
+                or self._runtime_single_request
+                or enhanced == base_args
+                or not _extensions_rejected(exc)
+            ):
                 raise
-            response = self.client.chat.completions.create(**base_args)
+            response = client.chat.completions.create(**base_args)
 
-        choice = response.choices[0]
+        # Empty/malformed completion envelopes can still report paid token
+        # usage. Return empty text so the caller retains that usage instead of
+        # losing it to a parsing exception or issuing another vocabulary call.
+        choices = getattr(response, "choices", None)
+        choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
         content = getattr(getattr(choice, "message", None), "content", "") or ""
         usage = getattr(response, "usage", None)
         input_tokens = _safe_int(getattr(usage, "prompt_tokens", 0))
@@ -159,6 +183,14 @@ class OpenAICompatibleProvider(LLMProvider):
             model=safe_model_text(getattr(response, "model", "") or self.model, 200),
             finish_reason=safe_model_text(getattr(choice, "finish_reason", "") or "", 100),
             reasoning_tokens=_safe_int(getattr(completion_details, "reasoning_tokens", 0)),
+            requested_thinking_mode=requested_thinking_mode,
+            usage_complete=all(
+                isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                for value in (
+                    getattr(usage, "prompt_tokens", None),
+                    getattr(usage, "completion_tokens", None),
+                )
+            ),
         )
 
     def get_provider_name(self) -> str:
