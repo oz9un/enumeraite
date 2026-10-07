@@ -132,3 +132,96 @@ Not every backend exposes log probabilities. When it does not, logprob mode retu
 - Treat results on famous public specifications (for example Petstore, GitHub, Stripe, Kubernetes, or crAPI) as engineering smoke tests: hosted models may have seen them during training. Use private or temporally held-out specifications for publishable model comparisons.
 
 Large datasets and outputs belong outside Git or under the ignored `bench-data/` and `bench-results/` directories.
+
+## Production-session replay with incomplete DNS inventories
+
+`tools/recon_bench.py` measures the actual `DiscoverySession` scheduler against
+archived DNS observations. Unlike `enumeraite bench subdomain`, it exercises
+iterative production discovery and scores candidates in their **query order**,
+not a confidence-reranked proposal list. It runs offline, without a model,
+passive collectors, or scan-history intake. Generation sees visible seeds and
+the outcomes of candidates it asks the archived oracle to validate.
+
+Save scan snapshots such as `GET /api/scans/<id>` responses. Each needs a
+`target` and a `nodes` list or map. Create a JSON manifest containing their
+paths, resolved relative to the working directory:
+
+```json
+[
+  {"path": "bench-data/development-scan.json"},
+  {"path": "bench-data/held-out-scan.json"}
+]
+```
+
+Each manifest entry may also supply `sha256`; a mismatch fails rather than
+silently changing the source inventory. A positive observation must have an
+attempt, valid IP addresses, no error, and acceptable wildcard evidence when
+that evidence was recorded. Legacy snapshots lacking wildcard detail are
+accepted as historical observations, not equivalent to fresh validation.
+Targets with fewer than four verified names cannot form cases; requested test
+targets below that threshold fail the freeze.
+
+```bash
+python tools/recon_bench.py freeze \
+  --manifest bench-data/scan-manifest.json \
+  --test-target heldout.example \
+  --seed-fraction 0.35 --seed-limit 100 --repeats 5 \
+  --salt recon-experiment-01 \
+  --output bench-results/recon/dataset.json
+
+python tools/recon_bench.py replay \
+  --dataset bench-results/recon/dataset.json --partition development \
+  --label candidate \
+  --budgets 100 250 500 1000 2500 \
+  --max-depth 5 --max-number 99 --case-seconds 120 \
+  --output bench-results/recon/development.json
+```
+
+Freeze before tuning. Repeat `--test-target` for every DNS zone belonging to
+the held-out organizations: the tool does not infer organization ownership.
+Repeated splits of a target, and related zones within an organization, are not
+independent replications. A held-out target that a hosted model may have seen in
+training is not proof of model-training isolation.
+
+After selecting on development data, record each source version's fingerprint
+**before** opening the test partition:
+
+```bash
+python tools/recon_bench.py fingerprint > bench-results/recon/selected-source.sha256
+
+python tools/recon_bench.py replay \
+  --dataset bench-results/recon/dataset.json --partition test \
+  --label selected \
+  --frozen-source-sha256 "$(cat bench-results/recon/selected-source.sha256)" \
+  --budgets 100 250 500 1000 2500 \
+  --max-depth 5 --max-number 99 --case-seconds 120 \
+  --output bench-results/recon/final-test.json
+```
+
+Test replay requires that saved fingerprint to match the imported package.
+Run baseline and selected code separately, using identical dataset bytes,
+budgets, depth, number range, and time limits. The fingerprint covers the
+package's Python files; results separately record the runner and dataset
+SHA-256 values. Archive the dependency versions and interpreter as well.
+Reusing test results to choose another variant requires a new holdout;
+recomputing a fingerprint does not restore blindness.
+
+Budgets count unique **non-seed** candidate attempts, between 1 and 5,000.
+The session's total candidate cap adds the visible seeds to the largest
+requested budget. Every visible seed is depth-validated before any case runs;
+an insufficient `--max-depth` fails instead of silently changing the seed
+cohort. Frozen datasets cannot be overwritten.
+
+Unknown candidates are **inconclusive**, not invented DNS negatives. Historical
+positives take precedence over later transient misses when freezing the
+inventory, so recall is historical recovery, not current DNS availability.
+The reported `known_hit_rate_lower_bound_at_budget` is only a lower bound for
+an incomplete inventory. Inspect candidate traces, stop reasons, and the full
+recall curve; do not treat early termination as an equal-budget completed run.
+
+This archived oracle does not reproduce live CNAME chains, wildcard probes,
+resolver costs, or DNS changes. Follow a selected change with a bounded live
+comparison using the same seeds and candidate allowance. Report verified names
+beyond seeds, names genuinely absent from the pre-campaign inventory, resolver
+calls including wildcard probes, and model spend separately. Neither a
+certificate name nor a model-generated candidate is a verified discovery.

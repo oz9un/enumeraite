@@ -4,6 +4,10 @@ import copy
 import json
 import re
 import threading
+from types import SimpleNamespace
+
+from anthropic import APITimeoutError as AnthropicTimeoutError
+from openai import APITimeoutError as OpenAITimeoutError
 
 import pytest
 
@@ -110,7 +114,7 @@ def test_duplicate_only_first_question_does_not_hide_productive_second_question(
 
 def test_successful_batch_survives_later_provider_failure_and_is_not_retried():
     snapshots = []
-    model = Model([["auth.example.test"], TimeoutError("offline failure")])
+    model = Model([["auth.example.test"], RuntimeError("terminal provider failure")])
     scan = make_session(model, checkpoint=lambda state: snapshots.append(copy.deepcopy(state)))
     assert scan._model_candidates(scan.findings) == 1
     assert len(model.requests) == 2 and not scan.model_enabled
@@ -120,9 +124,118 @@ def test_successful_batch_survives_later_provider_failure_and_is_not_retried():
     assert model._runtime_batch_limit is None
 
 
-def test_successful_batch_survives_exhausted_budget_without_another_request():
-    model = Model(uncertain=True)
+@pytest.mark.parametrize("error_type", [TimeoutError, OpenAITimeoutError, AnthropicTimeoutError])
+def test_timeout_recovery_keeps_uncertain_charge_and_checkpoints_before_retry(error_type):
+    error = (
+        error_type("fixture timeout")
+        if error_type is TimeoutError
+        else error_type(request=SimpleNamespace(method="POST", url="https://fixture.test"))
+    )
+    snapshots = []
+    model = Model([error, ["auth.example.test"], [], []])
+    scan = make_session(model, checkpoint=lambda state: snapshots.append(copy.deepcopy(state)))
+
+    assert scan._model_candidates(scan.findings) == 1
+    assert scan.model_enabled
+    assert scan.nodes["auth.example.test"]["status"] == "pending"
+    assert scan.ledger.calls == 4 and scan.ledger.uncertain_calls == 1
+    assert scan.ledger.reserved_usd == 0
+    reservations = [
+        state["ledger"] for state in snapshots if float(state["ledger"]["reserved_usd"])
+    ]
+    assert reservations[1]["uncertain_calls"] == 1
+    assert float(reservations[1]["spent_usd"]) == float(reservations[0]["reserved_usd"])
+    assert scan.ledger.spent_usd > float(reservations[0]["reserved_usd"])
+
+
+def test_repeated_timeouts_end_open_ended_scan_without_claiming_discovery_exhausted(monkeypatch):
+    monkeypatch.setattr(discovery_session, "expand_host", lambda *args, **kwargs: [])
+    model = Model([TimeoutError("fixture timeout")] * 3)
+    scan = make_session(
+        model,
+        options=ScanOptions(passive=False, max_candidates=0, max_rounds=0, time_limit=0),
+    )
+    result = scan.run()
+
+    assert scan.ledger.calls == scan.ledger.uncertain_calls == 3
+    assert scan.ledger.reserved_usd == 0
+    assert not scan.model_enabled
+    assert "timeout recovery exhausted" in result["stop_reason"]
+    assert "deterministic frontier exhausted" in result["stop_reason"]
+    assert result["findings"] == [SEED]
+
+
+def test_terminal_provider_failure_still_verifies_deterministic_hypotheses():
+    model = Model([RuntimeError("terminal provider failure")])
+    scan = make_session(
+        model,
+        options=ScanOptions(
+            passive=False,
+            max_candidates=0,
+            max_rounds=0,
+            time_limit=0,
+            max_depth=1,
+            max_number=2,
+            max_per_host=2,
+        ),
+    )
+    known, sibling = "api-01.example.test", "api-02.example.test"
+    scan._enqueue(known, source="seed")
+    scan.nodes[known].update(status="verified", attempts=1)
+    scan.validator.hits.add(sibling)
+    result = scan.run()
+
+    assert scan.ledger.calls == scan.ledger.uncertain_calls == 1
+    assert sibling in result["findings"]
+    assert scan.nodes[sibling]["source"] == "pattern"
+    assert "provider failed" in result["stop_reason"]
+    assert "deterministic frontier exhausted" in result["stop_reason"]
+
+
+def test_timeout_recovery_cannot_bypass_exhausted_budget():
+    model = Model([TimeoutError("fixture timeout")])
     scan = make_session(model, budget=0.02)
+
+    assert scan._model_candidates(scan.findings) == 0
+    assert scan.ledger.calls == scan.ledger.uncertain_calls == 1
+    assert scan.ledger.reserved_usd == 0
+    assert scan.ledger.spent_usd <= scan.ledger.limit_usd
+    assert not scan.model_enabled
+    assert any("budget exhausted" in warning for warning in scan.state["warnings"])
+
+
+@pytest.mark.parametrize("stop_kind", ["pause", "deadline"])
+def test_timeout_recovery_respects_stop_before_next_paid_attempt(stop_kind):
+    pause = threading.Event()
+    model = Model([TimeoutError("fixture timeout")])
+    scan = make_session(model, stop_requested=pause.is_set)
+
+    def stop_after_uncertain_charge(state):
+        if state["ledger"]["uncertain_calls"]:
+            if stop_kind == "pause":
+                pause.set()
+            else:
+                scan.deadline = 0
+
+    scan.checkpoint = stop_after_uncertain_charge
+    result = scan.run()
+
+    assert scan.ledger.calls == scan.ledger.uncertain_calls == 1
+    assert scan.ledger.reserved_usd == 0
+    assert result["stop_reason"] == (
+        "paused; scan saved" if stop_kind == "pause" else "time limit reached"
+    )
+
+
+@pytest.mark.parametrize("open_ended", [False, True])
+def test_successful_batch_survives_exhausted_budget_without_another_request(open_ended):
+    model = Model(uncertain=True)
+    options = (
+        ScanOptions(passive=False, max_candidates=0, max_rounds=0, time_limit=0)
+        if open_ended
+        else None
+    )
+    scan = make_session(model, budget=0.02, options=options)
     assert scan._model_candidates(scan.findings) == 20
     assert len(model.requests) == 1 and not scan.model_enabled
     assert scan.ledger.uncertain_calls == 1
@@ -141,9 +254,15 @@ def test_stop_between_passes_preserves_first_batch(stop_kind):
     assert model._runtime_batch_limit is None
 
 
-@pytest.mark.parametrize("remaining,expected", [(1, 1), (7, 5), (30, 20), (99, 60)])
+@pytest.mark.parametrize("remaining,expected", [(1, 1), (7, 5), (30, 20), (99, 60), (None, 60)])
 def test_model_passes_leave_room_for_python_and_respect_small_candidate_caps(remaining, expected):
-    scan = make_session(options=ScanOptions(passive=False, max_candidates=remaining + 1))
+    scan = make_session(
+        options=ScanOptions(
+            passive=False,
+            max_candidates=remaining + 1 if remaining is not None else 0,
+            time_limit=0,
+        )
+    )
     assert scan._model_candidates(scan.findings) == expected
     assert len(scan.nodes) == expected + 1
     assert scan.ledger.calls == (expected + 19) // 20
@@ -200,7 +319,7 @@ def test_resume_retains_batch_cursor_exclusions_and_spend():
     validate_checkpoint(second.state, second.target)
 
 
-@pytest.mark.parametrize("value", [True, -1, 50001, "2", None])
+@pytest.mark.parametrize("value", [True, -1, "2", None])
 def test_checkpoint_rejects_invalid_batch_cursor(value):
     scan = make_session()
     scan.save()
@@ -238,10 +357,18 @@ def test_old_pattern_frontier_reopens_once_without_erasing_history_or_limits():
     assert again.nodes[SEED]["expanded_revision"] == again.state["stale"] == 1
 
 
-@pytest.mark.parametrize("value", [True, 0, 2, "1", None])
+@pytest.mark.parametrize("value", [True, 0, "1", None])
 def test_checkpoint_rejects_unknown_pattern_paging_version(value):
     scan = make_session()
     scan.save()
     scan.state["pattern_paging_version"] = value
-    with pytest.raises(ValueError, match="pattern paging"):
+    with pytest.raises(ValueError):
+        validate_checkpoint(scan.state, scan.target)
+
+
+def test_checkpoint_rejects_future_pattern_paging_version():
+    scan = make_session()
+    scan.save()
+    scan.state["pattern_paging_version"] += 1
+    with pytest.raises(ValueError):
         validate_checkpoint(scan.state, scan.target)

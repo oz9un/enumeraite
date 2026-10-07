@@ -122,8 +122,8 @@ enumeraite scan ny-01-iphone.example.com --passive
 
 Use a domain you are authorized to assess. Supply a DNS name rather than a URL.
 With no seeds, the scan first collects historical subdomains from `crt.sh`
-certificate transparency, HackerTarget, and `subfinder` when installed. It
-verifies those names and common service
+certificate transparency, optional installed `subfinder`, and MerkleMap when
+configured. It verifies those names and common service
 labels, filters wildcard DNS, and expands patterns from real findings. Public
 sources are incomplete: failures and result caps are reported, and historical
 names that no longer resolve are not counted as findings. This command performs
@@ -153,10 +153,12 @@ in force unless an allowed setting is explicitly overridden.
 ### Optional subfinder
 
 Install [ProjectDiscovery subfinder](https://docs.projectdiscovery.io/tools/subfinder/install)
-separately to add it to passive collection. Enumeraite detects the executable on
-`PATH`; it does not install or update it. When absent, `crt.sh` and HackerTarget
-still work. The integration runs keyless with isolated temporary configuration,
-not your saved subfinder credentials or model API keys. It uses passive output
+separately to add it to passive collection. Enumeraite checks `PATH`, `GOBIN`,
+`GOPATH` bin directories, `~/go/bin`, and standard Homebrew locations; it does
+not install or update subfinder. When absent, `crt.sh` still works. The
+integration runs keyless with isolated temporary configuration, not your saved
+subfinder credentials or model API keys. HackerTarget is explicitly excluded.
+It uses passive output
 only, enforces the shared collection deadline and output/result caps, filters
 every hostname to the scan scope, and reports failures or incomplete results.
 Subfinder does not replace Enumeraite's DNS verification. CLI flags follow its

@@ -53,7 +53,6 @@ def services(monkeypatch, tmp_path):
         def validate(self, values, *, deadline):
             fake.events.append("dns")
             fake.dns_calls.append(list(values))
-            assert deadline > 0
             self.query_count += len(values)
             return [
                 DNSResult(
@@ -202,9 +201,12 @@ def test_no_passive_bootstraps_without_any_seed_and_find_counts_hits(services, t
     assert report["stop_reason"] == "verified target reached"
 
 
-def test_candidate_cap_can_stop_before_verified_goal(services, tmp_path):
+@pytest.mark.parametrize("goal", [2, 50_001])
+def test_candidate_cap_can_stop_before_verified_goal(services, tmp_path, goal):
     services.hits = {"www.example.com", "api.example.com"}
-    result = invoke(tmp_path, "--no-passive", "--find", "2", "--max-candidates", "1", "--json")
+    result = invoke(
+        tmp_path, "--no-passive", "--find", str(goal), "--max-candidates", "1", "--json"
+    )
     assert result.exit_code == 0, result.output
     report = json.loads(result.stdout)
     assert report["verified"] == report["attempted"] == 1
@@ -405,11 +407,34 @@ def test_deep_hostname_works_when_user_explicitly_increases_depth(services, tmp_
     assert services.passive_calls == []
 
 
-def test_resume_continues_saved_queue_without_recollecting_or_rechecking(services, tmp_path):
-    initial = invoke(tmp_path, "--find", "1", "--quiet")
+@pytest.mark.parametrize(
+    "limits",
+    [
+        [],
+        ["--max-candidates", "0", "--rounds", "0", "--time", "0"],
+        ["--max-candidates", "50001", "--rounds", "101", "--time", "25h"],
+    ],
+)
+def test_resume_continues_saved_queue_without_recollecting_or_rechecking(
+    services, tmp_path, limits
+):
+    initial = invoke(tmp_path, "--find", "1", "--quiet", *limits)
     assert initial.exit_code == 0, initial.output
     assert services.dns_calls == [["ny-01-iphone.example.com"]]
-    resumed = invoke(tmp_path, "--resume", "--find", "2", "--json", "--quiet")
+    resumed = CliRunner().invoke(
+        cli,
+        [
+            "scan",
+            "example.com",
+            "--state",
+            str(tmp_path / "scan.json"),
+            "--resume",
+            "--find",
+            "2",
+            "--json",
+            "--quiet",
+        ],
+    )
     assert resumed.exit_code == 0, resumed.output
     report = json.loads(resumed.stdout)
     assert report["verified"] == 2
@@ -494,13 +519,14 @@ def test_invalid_targets_fail_before_network(target, services, tmp_path):
     "arguments",
     [
         ("--find", "0"),
-        ("--max-candidates", "0"),
+        ("--max-candidates", "-1"),
+        ("--rounds", "-1"),
         ("--workers", "101"),
         ("--max-depth", "11"),
         ("--rate", "nan"),
         ("--time", "never"),
-        ("--time", "0s"),
-        ("--time", "25h"),
+        ("--time", "-1s"),
+        ("--time", "9" * 400),
         ("--budget-usd", "-1"),
         ("--budget-usd", "nan"),
         ("--budget-usd", "inf"),

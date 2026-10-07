@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from enumeraite.core import scan_state
+from enumeraite.core.discovery_session import DiscoverySession, ScanOptions, validate_checkpoint
+from enumeraite.core.dns_validator import DNSResult
 from enumeraite.core.scan_state import ScanStore, default_state_path
 
 
@@ -62,7 +64,10 @@ def test_invalid_serialization_cannot_damage_existing_state(tmp_path):
     assert not list(tmp_path.glob(".scan-*"))
 
 
-@pytest.mark.parametrize("raw", ["not-json", "[]", "null", '"text"'])
+@pytest.mark.parametrize(
+    "raw",
+    ["not-json", "[]", "null", '"text"', '{"value": NaN}', '{"value": Infinity}'],
+)
 def test_load_rejects_invalid_json_or_nonobject(tmp_path, raw):
     path = tmp_path / "scan.json"
     path.write_text(raw)
@@ -70,12 +75,65 @@ def test_load_rejects_invalid_json_or_nonobject(tmp_path, raw):
         ScanStore(path).load()
 
 
-def test_state_read_has_a_size_limit(tmp_path):
-    path = tmp_path / "scan.json"
-    with path.open("wb") as handle:
-        handle.truncate(32_000_001)
-    with pytest.raises(ValueError, match="byte limit"):
-        ScanStore(path).load()
+def test_large_open_ended_checkpoint_resumes_without_revalidating_history(tmp_path):
+    session = DiscoverySession(
+        "example.test",
+        ScanOptions(max_candidates=0, max_rounds=0, time_limit=0, passive=False, find=1),
+        object(),
+    )
+    previous_attempts = 50_001
+    pending = f"host{previous_attempts}.example.test"
+    session.state.update(
+        initialized=True,
+        round=50_001,
+        stale=50_001,
+        model_batches=50_001,
+        attempted=previous_attempts,
+        elapsed_seconds=90_001,
+        nodes=[
+            {
+                "value": f"host{index}.example.test",
+                "parent": None,
+                "source": "model",
+                "pattern": "",
+                "reason": "x" * 800,
+                "status": "miss" if index < previous_attempts else "pending",
+                "round": 50_001,
+                "depth": 0,
+                "expanded_revision": 50_001,
+                "addresses": [],
+                "error": "",
+                "attempts": 1 if index < previous_attempts else 0,
+            }
+            for index in range(previous_attempts + 1)
+        ],
+    )
+    store = ScanStore(tmp_path / "scan.json")
+    with store.locked(resume=False):
+        store.save(session.state)
+    assert store.path.stat().st_size > 32_000_000
+
+    calls = []
+
+    class DNS:
+        def validate(self, names, *, deadline):
+            calls.extend(names)
+            return [DNSResult(name, True, ["192.0.2.1"], 0) for name in names]
+
+    with store.locked(resume=True):
+        restored = store.load()
+        validate_checkpoint(restored, "example.test")
+        resumed = DiscoverySession(
+            "example.test", ScanOptions(**restored["options"]), DNS(), state=restored
+        )
+        result = resumed.run()
+    assert calls == [pending]
+    assert result["findings"] == [pending]
+    assert result["attempted"] == previous_attempts + 1
+    assert result["round"] == result["model_batches"] == 50_001
+    assert result["elapsed_seconds"] >= 90_001
+    assert len(resumed.nodes) == previous_attempts + 1
+    validate_checkpoint(resumed.state, "example.test")
 
 
 def test_lock_excludes_other_scan_and_is_released_after_exception(tmp_path):

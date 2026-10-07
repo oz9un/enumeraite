@@ -93,14 +93,17 @@ def test_disabled_or_ineligible_vocabulary_chooses_direct_before_any_call(enable
 
 
 @pytest.mark.parametrize("answer", ["malformed", "error"])
-def test_bad_vocabulary_does_not_trigger_paid_fallback_or_lose_prior_batches(answer):
+def test_bad_vocabulary_has_no_direct_fallback_and_preserves_prior_batches(answer):
     saved = []
     session, model, ledger = make_session(
         answer=answer, checkpoint=lambda s: saved.append(copy.deepcopy(s))
     )
     session._model_candidates(KNOWN)
-    assert [kind for kind, _ in model.requests] == ["direct", "direct", "vocabulary"]
-    assert ledger.calls == 3
+    vocabulary_calls = 3 if answer == "error" else 1
+    assert [kind for kind, _ in model.requests] == ["direct", "direct"] + [
+        "vocabulary"
+    ] * vocabulary_calls
+    assert ledger.calls == 2 + vocabulary_calls
     assert ledger.spent_usd > 0
     assert all(f"direct-{i}.example.test" in session.nodes for i in (1, 2))
     assert any(
@@ -111,8 +114,8 @@ def test_bad_vocabulary_does_not_trigger_paid_fallback_or_lose_prior_batches(ans
     assert "api.stage.example.test" not in session.nodes
     if answer == "error":
         assert not session.model_enabled
-        assert ledger.uncertain_calls == 1
-        assert saved[-1]["ledger"]["uncertain_calls"] == 1
+        assert ledger.uncertain_calls == 3
+        assert saved[-1]["ledger"]["uncertain_calls"] == 3
     else:
         assert ledger.uncertain_calls == 0
 

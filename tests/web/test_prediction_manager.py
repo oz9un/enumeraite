@@ -142,7 +142,6 @@ def test_generation_and_prediction_have_distinct_ledgers(tmp_path):
         {"prediction_budget_usd": -1},
         {"prediction_budget_usd": True},
         {"prediction_budget_usd": float("nan")},
-        {"prediction_budget_usd": 1001},
         {"provider": "jev"},
     ],
 )

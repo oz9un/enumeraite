@@ -100,12 +100,109 @@
       "connection " + (connected ? "connected" : "error");
     $("connection").lastElementChild.textContent = message;
   }
+  function dnsStatusLabel(status) {
+    const labels = {
+      verified: "DNS resolved",
+      pending: "DNS queued",
+      active: "Checking DNS",
+      miss: "No DNS address",
+      inconclusive: "DNS inconclusive",
+      wildcard: "Wildcard filtered",
+    };
+    return Object.hasOwn(labels, status) ? labels[status] : "DNS status unknown";
+  }
   function statusBadge(status) {
     return element(
       "span",
       "status-label " + String(status || "pending").replace(/[^a-z]/g, ""),
-      readable(status || "pending"),
+      dnsStatusLabel(status || "pending"),
     );
+  }
+  function passiveCollectors(node) {
+    const records = node?.origin_evidence?.passive;
+    if (!Array.isArray(records)) return [];
+    return [...new Set(records
+      .map((record) => (record && typeof record.source === "string" ? record.source : ""))
+      .filter(Boolean))].sort();
+  }
+  function originLabel(node) {
+    const source = node?.source;
+    const labels = {
+      model: "AI proposal",
+      seed: "Starting name",
+      history: "Prior scan candidate",
+      passive: "Public source",
+      dns: "Observed DNS alias",
+      bootstrap: "Common-name guess",
+      pattern: "Pattern candidate",
+      numeric: "Numeric pattern",
+    };
+    if (source === "passive") {
+      const collectors = passiveCollectors(node);
+      return collectors.length ? collectors.join(", ") : labels.passive;
+    }
+    return Object.hasOwn(labels, source) ? labels[source] : readable(source || "Unknown");
+  }
+  function nodeAddresses(node) {
+    const recorded = ["A", "AAAA"].flatMap((family) =>
+      Array.isArray(node.dns_evidence?.records?.[family]?.addresses)
+        ? node.dns_evidence.records[family].addresses
+        : [],
+    );
+    return [...new Set([
+      ...(Array.isArray(node.addresses) ? node.addresses : []),
+      ...recorded,
+    ].filter((address) => typeof address === "string"))];
+  }
+  function recordDetails(node, family) {
+    const record = node.dns_evidence?.records?.[family];
+    if (!record || typeof record !== "object") {
+      const addresses = nodeAddresses(node).filter((address) =>
+        family === "AAAA" ? address.includes(":") : /^\d+\.\d+\.\d+\.\d+$/.test(address),
+      );
+      return "Check: Not recorded" + (addresses.length
+        ? " · Saved addresses: " + addresses.join(", ")
+        : " · No saved " + (family === "A" ? "IPv4" : "IPv6") + " address");
+    }
+    const labels = {
+      answered: "Address answer",
+      no_answer: "No " + family + " answer",
+      nxdomain: "Name not found (NXDOMAIN)",
+      error: "Lookup error",
+      not_checked: "Not checked",
+    };
+    const label = Object.hasOwn(labels, record.status) ? labels[record.status] : "Not recorded";
+    const addresses = Array.isArray(record.addresses)
+      ? record.addresses.filter((value) => typeof value === "string")
+      : [];
+    return label + (addresses.length ? " · " + addresses.join(", ") : "") +
+      (record.error ? " · " + String(record.error) : "");
+  }
+  function partialDns(node) {
+    const records = node.dns_evidence?.records;
+    return node.status === "verified" && ["A", "AAAA"].some(
+      (family) => ["error", "not_checked", "nxdomain"].includes(records?.[family]?.status),
+    );
+  }
+  function checkedAt(node) {
+    const value = node.dns_evidence?.checked_at;
+    if (typeof value !== "string" || !value.trim()) return "Not recorded";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? "Not recorded"
+      : date.toISOString().replace("T", " ").replace("Z", " UTC");
+  }
+  function wildcardDetails(node) {
+    const wildcard = node.dns_evidence?.wildcard;
+    const labels = {
+      not_checked: "Not checked for this observation.",
+      not_detected: "No wildcard detected in the sampled siblings.",
+      matched: "Filtered as a wildcard response (matching or rotating sibling answers); not accepted as a distinct DNS finding.",
+      different_answer: "Addresses differ from the sampled wildcard response.",
+      inconclusive: "Wildcard calibration was inconclusive; wildcard behavior is uncertain.",
+    };
+    if (!wildcard || !Object.hasOwn(labels, wildcard.status)) return "Not recorded";
+    return labels[wildcard.status] + (wildcard.parent ? " Parent: " + String(wildcard.parent) : "");
   }
   function activeGlobal() {
     return state.scans.some((scan) => activeStatuses.has(scan.status));
@@ -130,6 +227,7 @@
     if (
       !Number.isFinite(budget) ||
       budget < 0 ||
+      (state.features.open_ended_scans !== true && budget > 1000) ||
       !$("prediction-budget").value.trim()
     )
       throw new Error("Enter a valid additional Jev prediction budget in USD.");
@@ -388,7 +486,7 @@
     const active = Array.isArray(scan?.active) ? scan.active : [];
     $("scan-target").textContent = scan?.target || "Map what’s out there.";
     $("scan-description").textContent = scan
-      ? `${providerName(scan) === "none" ? (predictionProvider(scan) ? "Pattern discovery + Jev ranking" : "Free discovery") : (providers[providerName(scan)]?.name || "Hosted AI") + "-assisted discovery"} · ${scan.model || scan.provider?.model || (scan.options?.passive === false ? "Evidence-led recursive patterns" : "Passive sources + recursive patterns")} · ${scan.status === "running" ? "Live evidence, as it happens." : "Your progress is saved locally."}`
+      ? `${providerName(scan) === "none" ? (predictionProvider(scan) ? "Pattern discovery + Jev ranking" : "Pattern discovery") : (providers[providerName(scan)]?.name || "Hosted AI") + "-assisted discovery"} · ${scan.model || scan.provider?.model || (scan.options?.passive === false ? "Evidence-led recursive patterns" : "Passive sources + recursive patterns")} · ${scan.status === "running" ? "Recording DNS observations." : "Saved DNS observations; not live monitoring."}`
       : "Start with a domain or known host. Follow the patterns. Watch discoveries take shape.";
     $("scan-status").textContent = scan
       ? readable(scan.status).toUpperCase()
@@ -441,7 +539,9 @@
     $("metric-time").textContent = elapsed(summary.elapsed_seconds);
     $("metric-stop").textContent = scan
       ? scan.status === "running"
-        ? `${elapsed(scan.options?.time_limit)} limit per run`
+        ? scan.options?.time_limit === 0
+          ? "No time limit"
+          : `${elapsed(scan.options?.time_limit)} limit per run`
         : scan.status === "pausing"
           ? "Finishing in-flight work"
           : readable(summary.stop_reason || scan.status)
@@ -469,7 +569,7 @@
     const announcement = scan ? `${scan.status}:${verified}` : "";
     if (announcement !== state.lastAnnounced) {
       $("live-announcement").textContent = scan
-        ? `${scan.target}: ${readable(scan.status)}, ${verified} verified hosts.`
+        ? `${scan.target}: ${readable(scan.status)}, ${verified} DNS-resolved hosts. Web not checked.`
         : "Ready to start a scan.";
       state.lastAnnounced = announcement;
     }
@@ -690,7 +790,7 @@
     $("graph-count").textContent = count(nodes.length) + " NODES";
     $("graph-limit").hidden = total <= nodes.length;
     $("graph-limit").textContent =
-      `Showing ${nodes.length} of ${count(total)} candidates, prioritizing active and verified branches. Search all candidates in Findings.`;
+      `Showing ${nodes.length} of ${count(total)} candidates, prioritizing active and DNS-resolved branches. Search all candidates in Findings.`;
     if (!scan || !nodes.length) {
       state.graphBounds = null;
       state.graphPositions = new Map();
@@ -789,7 +889,7 @@
         role: "button",
         tabindex: 0,
         "data-hostname": value,
-        "aria-label": `${value}, ${isRoot ? "target domain" : active.has(value) ? "currently checking DNS" : readable(node.status)}. Select for details.`,
+        "aria-label": `${value}, ${isRoot ? "target domain" : active.has(value) ? "currently checking DNS" : dnsStatusLabel(node.status)}. Web not checked. Select for DNS evidence.`,
       });
       group.append(
         svg("title", {}, value),
@@ -816,9 +916,7 @@
             ? "TARGET / DISCOVERY ROOT"
             : active.has(value)
               ? "DNS check in progress"
-              : readable(node.source || "candidate") +
-                " · " +
-                readable(node.status),
+              : dnsStatusLabel(node.status) + " · Web not checked",
         ),
       );
       group.addEventListener("click", (event) => {
@@ -854,8 +952,155 @@
     renderNode();
     renderGraph();
   }
+  function detailList(rows) {
+    const list = element("dl");
+    rows.forEach(([title, value]) =>
+      list.append(element("dt", "", title), element("dd", "", value)),
+    );
+    return list;
+  }
+  function originTime(value) {
+    if (typeof value !== "string" || !value.trim()) return "Not recorded";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value
+      : date.toISOString().replace("T", " ").replace("Z", " UTC");
+  }
+  function sourceLink(source, record, hostname) {
+    let href, label;
+    if (source === "crt.sh" && typeof record?.certificate_id === "string" &&
+        /^\d{1,32}$/.test(record.certificate_id)) {
+      href = "https://crt.sh/?id=" + record.certificate_id;
+      label = "Open recorded certificate #" + record.certificate_id;
+    } else if (source === "crt.sh") {
+      href = "https://crt.sh/?q=" + encodeURIComponent(hostname);
+      label = "Live lookup on crt.sh (current results)";
+    } else return null;
+    const link = element("a", "origin-link", label);
+    link.setAttribute("href", href);
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noopener noreferrer");
+    return link;
+  }
+  function renderOrigin(node) {
+    const section = element("section", "origin-section");
+    section.setAttribute("aria-label", "Origin and proposal evidence");
+    section.append(element("h3", "node-section-title", "Origin & proposal evidence"));
+    const saved = node.origin_evidence || {};
+    section.append(detailList([
+      ["First queued by", originLabel(node)],
+      ["Why proposed", node.reason || "Reason not recorded"],
+      ["Parent", node.parent || "Target / initial discovery"],
+      ["Round", String(node.round ?? 0)],
+      ["Pattern", node.pattern || "No inferred pattern"],
+      ["Queued at", originTime(saved.queued_at)],
+    ]));
+    const generated = ["model", "pattern", "numeric", "bootstrap"].includes(node.source);
+    if (generated) {
+      const rows = [];
+      for (const [key, label] of [
+        ["provider", "Request provider"], ["model", "Request model"],
+        ["focus", "Focus"], ["batch", "Batch"], ["numeric_ceiling", "Numeric ceiling"],
+        ["plan_id", "Plan ID"], ["plan_description", "Plan description"],
+        ["layout", "Vocabulary layout"], ["word", "Vocabulary word"],
+      ]) {
+        if (saved[key] !== undefined && saved[key] !== null && saved[key] !== "")
+          rows.push([label, saved[key]]);
+      }
+      if (typeof saved.confidence === "number" && Number.isFinite(saved.confidence) &&
+          saved.confidence >= 0 && saved.confidence <= 1)
+        rows.push(["Proposal / ranking score", saved.confidence.toLocaleString(undefined, {maximumFractionDigits: 3}) + " / 1 (not DNS likelihood)"]);
+      if (node.source === "model" && !saved.provider && !saved.model) {
+        const provider = providerName(state.scan);
+        const model = state.scan.model || state.scan.provider?.model;
+        if (provider !== "none" || model)
+          rows.push(["Saved scan configuration", [provider !== "none" ? provider : "", model].filter(Boolean).join(" / ") + " (not recorded request metadata)"]);
+      }
+      if (rows.length) section.append(detailList(rows));
+      const cohort = Array.isArray(saved.evidence)
+        ? saved.evidence.filter((name) => typeof name === "string") : [];
+      section.append(element("h4", "node-section-subtitle", "Saved proposal evidence cohort"));
+      if (cohort.length) {
+        const list = element("ul", "origin-cohort");
+        for (const name of cohort) {
+          const item = element("li");
+          if (state.scan.nodes.some((candidate) => candidate.value === name)) {
+            const button = element("button", "host-button", name);
+            button.setAttribute("type", "button");
+            button.setAttribute("aria-label", "Inspect proposal evidence: " + name);
+            button.addEventListener("click", () => {
+              selectNode(name);
+              $("node-details").focus({preventScroll: true});
+            });
+            item.append(button);
+          } else item.textContent = name + " (not in saved node list)";
+          list.append(item);
+        }
+        section.append(list, element("p", "node-detail-note",
+          "Bounded sample of verified names used for this proposal; not an observation of the generated candidate."));
+      } else section.append(element("p", "node-detail-note",
+        "The proposal evidence cohort was not recorded. Parent, pattern and reason are the available saved clues."));
+      section.append(element("p", "node-detail-note",
+        "Generated hypothesis, not an observed hostname. Generation and ranking do not verify DNS."));
+    }
+    const sources = new Map();
+    if (Array.isArray(saved.passive)) {
+      for (const record of saved.passive) {
+        if (!record || typeof record.source !== "string" || !record.source) continue;
+        if (!sources.has(record.source)) sources.set(record.source, []);
+        sources.get(record.source).push(record);
+      }
+    }
+    for (const [source, names] of Object.entries(state.scan.summary?.passive_sources || {})) {
+      if (Array.isArray(names) && names.includes(node.value) && !sources.has(source))
+        sources.set(source, []);
+    }
+    if (sources.size || node.source === "passive") {
+      section.append(element("h4", "node-section-subtitle", "Public-source associations"));
+      section.append(element("p", "node-detail-note",
+        "Recorded collector membership; corroborating sources do not change the first-queued method. Historical records do not establish current DNS."));
+      if (!sources.size) section.append(element("p", "node-detail-note",
+        "Collector identity and source record details were not recorded."));
+      for (const [source, records] of sources) {
+        const card = element("article", "origin-source");
+        card.append(element("h5", "node-section-subtitle", source));
+        if (source === "subfinder") card.append(element("p", "node-detail-note",
+          "Subfinder is the collector. Its silent output does not report the upstream provider."));
+        if (!records.length) {
+          card.append(element("p", "node-detail-note",
+            "Membership saved; query, matched name, collection time and certificate/IP record details were not recorded."));
+          const link = sourceLink(source, null, node.value);
+          if (link) card.append(link);
+        } else {
+          card.append(element("p", "node-detail-note",
+            "Showing " + Math.min(records.length, 3) + " saved record sample(s), at most 3 per collector; not a complete source history."));
+          for (const record of records.slice(0, 3)) {
+            const rows = [
+              ["Query", record.query || "Not recorded"],
+              ["Matched name", record.matched_name || "Not recorded"],
+              ["Source collected at", originTime(record.collected_at)],
+            ];
+            for (const [key, label] of [
+              ["certificate_id", "Certificate ID"], ["issuer", "Certificate issuer"],
+              ["subject_common_name", "Certificate subject common name"],
+              ["first_seen", "Provider first seen (not this scan's DNS check)"],
+              ["not_before", "Certificate valid from"], ["not_after", "Certificate valid until"],
+              ["entry_timestamp", "Certificate log timestamp"], ["address", "Historical source IP"],
+            ]) if (record[key]) rows.push([label, record[key]]);
+            card.append(detailList(rows));
+            const link = sourceLink(source, record, node.value);
+            if (link) card.append(link);
+          }
+        }
+        section.append(card);
+      }
+      section.append(element("p", "node-detail-note",
+        "Source collection time is when the collector fetched the record, not first seen or DNS checked time. Certificate dates describe the certificate. Links open only when selected; live lookups are not archived evidence."));
+    }
+    return section;
+  }
   function renderNode() {
     const details = $("node-details");
+    const focused = details.contains(document.activeElement) ? document.activeElement : null;
     const node = state.scan?.nodes?.find(
       (candidate) => candidate.value === state.selectedNode,
     );
@@ -866,37 +1111,61 @@
           "p",
           "muted",
           state.selectedNode === state.scan?.target
-            ? `${state.scan.target} is the discovery root. Known hosts are verified first; each verified host can inspire new pattern candidates.`
+            ? `${state.scan.target} is the discovery root. Candidate hostnames are checked with DNS; resolved names can inspire further candidates. DNS resolution does not prove a working website.`
             : "Select a node on the map or a hostname in the findings list to see its origin, pattern, and DNS evidence.",
         ),
       );
       return;
     }
-    details.append(
-      element("div", "node-host", node.value),
-      statusBadge(node.status),
-    );
+    const badges = element("div", "node-badges");
+    badges.append(statusBadge(node.status), element("span", "web-status", "Web not checked"));
+    const explanations = {
+      verified: "At least one address was accepted by this scan's DNS checks. This does not prove a working website.",
+      miss: "No usable A or AAAA address was recorded by this check. This does not establish that the domain is absent or permanently unavailable.",
+      pending: "This candidate is waiting for a DNS check. Any saved evidence below belongs to an earlier attempt.",
+      wildcard: "Filtered as a wildcard response (matching or rotating sibling answers), so this name was not counted as a distinct DNS finding.",
+      inconclusive: "DNS lookup or wildcard checks were inconclusive. This is not proof that the hostname does not exist.",
+    };
+    details.append(element("div", "node-host", node.value), badges, renderOrigin(node),
+      element("h3", "node-section-title", "DNS evidence"),
+      element("p", "node-detail-note", Object.hasOwn(explanations, node.status)
+        ? explanations[node.status] : "The DNS outcome was not recorded."));
+    if (partialDns(node)) {
+      const incomplete = {error: "lookup failed", not_checked: "was not checked", nxdomain: "reported NXDOMAIN"};
+      const outcomes = ["A", "AAAA"].flatMap((family) => {
+        const status = node.dns_evidence?.records?.[family]?.status;
+        return Object.hasOwn(incomplete, status) ? [family + " " + incomplete[status]] : [];
+      });
+      details.append(element("p", "node-detail-warning",
+        "Partial DNS evidence: an address was accepted, but " + outcomes.join("; ") +
+        ". Address-family coverage is incomplete or conflicting; a failed or skipped lookup does not establish that its address family is absent."));
+    }
+    const duration = node.dns_evidence?.duration_ms;
     const rows = [
-      ["Origin", readable(node.source || "unknown")],
-      ["Parent", node.parent || "Target / initial discovery"],
-      ["Round", String(node.round ?? 0)],
-      ["Pattern", node.pattern || "No inferred pattern"],
-      [
-        "DNS",
-        Array.isArray(node.addresses) && node.addresses.length
-          ? node.addresses.join(", ")
-          : "No verified address",
-      ],
+      ["Last DNS check", checkedAt(node)],
+      ["Lookup duration", typeof duration === "number" && Number.isFinite(duration) && duration >= 0
+        ? duration.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " ms"
+        : "Not recorded"],
+      ["Completed DNS attempts", Number.isInteger(node.attempts) && node.attempts >= 0 ? count(node.attempts) : "Not recorded"],
+      ["A (IPv4)", recordDetails(node, "A")],
+      ["AAAA (IPv6)", recordDetails(node, "AAAA")],
+      ["Wildcard check", wildcardDetails(node)],
     ];
-    const list = element("dl");
-    rows.forEach(([title, value]) =>
-      list.append(element("dt", "", title), element("dd", "", value)),
-    );
-    details.append(list);
-    if (node.reason)
-      details.append(element("p", "node-detail-note", node.reason));
+    const aliases = node.dns_evidence?.aliases;
+    if (Array.isArray(aliases) && aliases.length)
+      rows.push(["Observed CNAME targets", aliases.join(", ")]);
+    details.append(detailList(rows));
+    details.append(element("p", "node-detail-note",
+      "Wildcard checks sample two random sibling names per parent and reuse the result. This bounded sample is not exhaustive."));
+    details.append(element("p", "node-detail-note",
+      "These are saved observations, not live monitoring. No HTTP or HTTPS check was performed; website availability is unknown."));
     if (node.error)
-      details.append(element("p", "node-detail-note", node.error));
+      details.append(element("p", "node-detail-note", "Recorded error: " + node.error));
+    if (focused && focused !== details)
+      [...details.querySelectorAll("a, button")].find((candidate) =>
+        candidate.tagName === focused.tagName && candidate.textContent === focused.textContent &&
+        candidate.getAttribute("href") === focused.getAttribute("href"),
+      )?.focus({preventScroll: true});
   }
   function renderFindings() {
     const all = Array.isArray(state.scan?.nodes) ? state.scan.nodes : [];
@@ -910,7 +1179,7 @@
         (filter === "all" || node.status === filter) &&
         (!search ||
           String(node.value).toLowerCase().includes(search) ||
-          (node.addresses || []).some((address) =>
+          nodeAddresses(node).some((address) =>
             String(address).toLowerCase().includes(search),
           )),
     );
@@ -926,6 +1195,8 @@
         node.status,
         node.source,
         node.addresses,
+        node.dns_evidence,
+        node.attempts,
       ]),
     );
     const body = $("findings-body");
@@ -941,6 +1212,7 @@
           status = element("td");
         const button = element("button", "host-button", node.value);
         button.dataset.hostname = node.value;
+        button.setAttribute("aria-label", `${node.value}: ${dnsStatusLabel(node.status)}. Show DNS evidence; web not checked.`);
         button.addEventListener("click", () => {
           selectNode(node.value);
           focusWork(node.value);
@@ -953,14 +1225,16 @@
         });
         host.append(button);
         status.append(statusBadge(node.status));
+        if (partialDns(node)) status.append(element("span", "partial-dns", "Partial evidence"));
         row.append(
           host,
           status,
-          element("td", "host-origin", readable(node.source || "unknown")),
+          element("td", "web-status", "Web not checked"),
+          element("td", "host-origin", originLabel(node)),
           element(
             "td",
             "host-address",
-            (node.addresses || []).join(", ") || "—",
+            nodeAddresses(node).join(", ") || "—",
           ),
         );
         body.append(row);
@@ -975,7 +1249,7 @@
       ? "No hostnames or addresses match your search."
       : all.length
         ? "No candidates match this filter yet."
-        : "Verified discoveries will appear here as the scan progresses.";
+        : "DNS-resolved names will appear here as the scan progresses.";
     $("findings-total").textContent = nodes.length
       ? `${count(state.page * pageSize + 1)}–${count(Math.min(nodes.length, (state.page + 1) * pageSize))} of ${count(nodes.length)} matching hosts`
       : "0 matching hosts";
@@ -986,7 +1260,9 @@
   function renderDiscoveryMethods() {
     const labels = {
       seed: "Starting names",
+      history: "Prior scan names",
       passive: "Public-source names",
+      dns: "Observed DNS aliases",
       bootstrap: "Common names",
       numeric: "Numeric patterns",
       pattern: "Other patterns",
@@ -999,7 +1275,7 @@
     const body = $("discovery-method-rows");
     body.replaceChildren();
     const seen = new Set();
-    for (const method of methods.slice(0, 7)) {
+    for (const method of methods.slice(0, Object.keys(labels).length)) {
       if (!Object.hasOwn(labels, method?.method) || seen.has(method.method))
         continue;
       seen.add(method.method);
@@ -1046,7 +1322,7 @@
         element(
           "div",
           "table-empty",
-          "Patterns will emerge from verified hosts.",
+          "Patterns will emerge from DNS-resolved hosts.",
         ),
       );
     if (patterns.length > 100)
@@ -1174,6 +1450,40 @@
     state.scan = null;
   }
 
+  function openEnded(prefix = "") {
+    return (
+      state.features.open_ended_scans === true &&
+      $(prefix + "run-until-paused").checked
+    );
+  }
+  function renderWorkLimits(prefix = "") {
+    const supported = state.features.open_ended_scans === true;
+    $(prefix + "open-ended-option").hidden = !supported;
+    $(prefix + "run-until-paused").disabled = !supported;
+    for (const [id, maximum, minimum] of [
+      ["candidates", 50000, 1],
+      ["rounds", 100, 1],
+      ["duration", 1440, 0.1],
+    ]) {
+      const input = $(prefix + id);
+      input.disabled = openEnded(prefix);
+      input.max = supported ? "" : String(maximum);
+      input.min = supported ? "0" : String(minimum);
+    }
+    $(prefix + "goal").max = supported ? "" : "50000";
+    for (const id of ["budget", "prediction-budget"])
+      $(prefix + id).max = supported ? "" : "1000";
+  }
+  function workLimitOptions(prefix = "") {
+    const unlimited = openEnded(prefix);
+    return {
+      max_candidates: unlimited ? 0 : Number($(prefix + "candidates").value),
+      time_limit: unlimited ? 0 : Number($(prefix + "duration").value) * 60,
+      max_rounds: unlimited ? 0 : Number($(prefix + "rounds").value),
+      ...(unlimited ? { stale_rounds: 0 } : {}),
+    };
+  }
+
   async function refresh() {
     if (state.polling) return;
     state.polling = true;
@@ -1183,6 +1493,8 @@
       state.features = overview.features || {};
       $("vocabulary-breadth-option").hidden =
         state.features.vocabulary_breadth !== true;
+      renderWorkLimits();
+      renderWorkLimits("resume-");
       renderCredentials(overview.credentials || {});
       if (!state.selectedId && state.scans.length)
         chooseScan(state.scans[0].id);
@@ -1232,9 +1544,11 @@
   $("provider").addEventListener("change", () => {
     const provider = providers[$("provider").value];
     $("ai-settings").hidden = !provider;
+    $("budget").required = Boolean(provider);
+    $("budget").disabled = !provider;
     $("mode-note").textContent = provider
-      ? "Hosted AI explores different combinations of verified names in diverse batches. Python expands patterns; DNS checks every guess. Leave the finding goal empty to explore within your scan limits."
-      : "Start from public evidence or your own hostnames. Verified discoveries guide the next round. No generation API key or generation charges; optional plan ranking is billed separately.";
+      ? "Hosted AI explores different combinations of DNS-resolved names in diverse batches. Python expands patterns; DNS checks every guess. Leave the finding goal empty to explore within your scan limits."
+      : "Start from public evidence or your own hostnames. DNS-resolved names guide the next round. No generation API key or generation charges; optional plan ranking is billed separately.";
     $("api-key").value = "";
     if (provider) {
       $("model-label").textContent = provider.name + " model";
@@ -1338,8 +1652,15 @@
         throw new Error(
           "Save your " +
             (providers[provider]?.name || "provider") +
-            " key for this session, or select free discovery mode.",
+            " key for this session, or select pattern-based generation.",
         );
+      const budget = provider !== "none" ? Number($("budget").value) : null;
+      if (
+        provider !== "none" &&
+        (!$("budget").value.trim() || !Number.isFinite(budget) || budget < 0 ||
+          (state.features.open_ended_scans !== true && budget > 1000))
+      )
+        throw new Error("Enter a finite, nonnegative generation budget in USD.");
       const target = $("target").value.trim();
       const predictionSettings = predictionStartSettings();
       const input = discoveryInput();
@@ -1347,9 +1668,7 @@
       if (!preview) throw new Error("Enter a domain or known hostname first.");
       const options = {
         find: $("goal").value ? Number($("goal").value) : null,
-        time_limit: Number($("duration").value) * 60,
-        max_candidates: Number($("candidates").value),
-        max_rounds: Number($("rounds").value),
+        ...workLimitOptions(),
         workers: Number($("workers").value),
         rate: Number($("rate").value),
         max_depth: Number($("depth").value),
@@ -1363,7 +1682,7 @@
         ...(input.scope ? { scope: input.scope } : {}),
         provider,
         model: provider !== "none" ? $("model").value : null,
-        budget_usd: provider !== "none" ? Number($("budget").value) : null,
+        budget_usd: budget,
         options,
         seeds: input.seeds,
         ...predictionSettings,
@@ -1372,6 +1691,20 @@
       $("notice").hidden = true;
     });
   });
+  for (const prefix of ["", "resume-"])
+    $(prefix + "run-until-paused").addEventListener("change", () => {
+      if (!openEnded(prefix)) {
+        const summary = prefix ? state.scan?.summary || {} : {};
+        for (const [id, fallback] of [
+          ["candidates", Math.max(1000, number(summary.attempted) + 1000)],
+          ["rounds", Math.max(10, number(summary.round) + 10)],
+          ["duration", 5],
+        ])
+          if (Number($(prefix + id).value) === 0)
+            $(prefix + id).value = fallback;
+      }
+      renderWorkLimits(prefix);
+    });
   for (const id of ["target", "starting-seeds", "discovery-scope"]) {
     $(id).addEventListener("input", () => scheduleResolve());
     $(id).addEventListener("blur", () => {
@@ -1399,7 +1732,11 @@
   }
   $("resume").addEventListener("click", () => {
     if (!state.scan || state.busy || activeGlobal()) return;
-    if (state.scan.status === "paused" && !predictionProvider(state.scan)) {
+    if (
+      state.features.open_ended_scans !== true &&
+      state.scan.status === "paused" &&
+      !predictionProvider(state.scan)
+    ) {
       resumeRequest({});
       return;
     }
@@ -1409,11 +1746,28 @@
       ledger = summary.ledger;
     $("resume-title").textContent = "Continue " + scan.target;
     $("resume-evidence").textContent =
-      `${count(summary.verified)} verified hosts · ${count(summary.attempted)} candidates already checked · ${count(summary.round)} rounds completed`;
+      `${count(summary.verified)} DNS-resolved hosts · ${count(summary.attempted)} candidates already checked · ${count(summary.round)} rounds completed`;
     $("resume-candidates").value = number(options.max_candidates, 1000);
     $("resume-goal").value = options.find ?? "";
     $("resume-duration").value = number(options.time_limit, 300) / 60;
     $("resume-rounds").value = number(options.max_rounds, 10);
+    const supported = state.features.open_ended_scans === true;
+    $("resume-run-until-paused").checked =
+      supported &&
+      options.max_candidates === 0 &&
+      options.time_limit === 0 &&
+      options.max_rounds === 0 &&
+      !options.stale_rounds;
+    if (!supported || openEnded("resume-")) {
+      for (const [id, fallback] of [
+        ["candidates", Math.max(1000, number(summary.attempted) + 1000)],
+        ["rounds", Math.max(10, number(summary.round) + 10)],
+        ["duration", 5],
+      ])
+        if (Number($("resume-" + id).value) === 0)
+          $("resume-" + id).value = fallback;
+    }
+    renderWorkLimits("resume-");
     $("resume-budget-row").hidden = providerName(scan) === "none";
     $("resume-budget").value = number(ledger?.limit_usd ?? ledger?.limit, 1);
     $("resume-budget").required = providerName(scan) !== "none";
@@ -1440,30 +1794,60 @@
     event.preventDefault();
     if (!state.scan) return;
     const options = {
-      max_candidates: Number($("resume-candidates").value),
+      ...workLimitOptions("resume-"),
       find: $("resume-goal").value ? Number($("resume-goal").value) : null,
-      time_limit: Number($("resume-duration").value) * 60,
-      max_rounds: Number($("resume-rounds").value),
     };
     const summary = state.scan.summary || {},
       ledger = summary.ledger;
     let error = "";
-    if (options.max_candidates <= number(summary.attempted))
+    const supported = state.features.open_ended_scans === true;
+    if (
+      !Number.isInteger(options.max_candidates) ||
+      !Number.isInteger(options.max_rounds) ||
+      !Number.isFinite(options.time_limit) ||
+      options.max_candidates < (supported ? 0 : 1) ||
+      options.max_rounds < (supported ? 0 : 1) ||
+      options.time_limit < 0 ||
+      (!supported && options.time_limit === 0) ||
+      (!supported && (
+        options.max_candidates > 50000 ||
+        options.max_rounds > 100 ||
+        options.time_limit > 86400
+      ))
+    )
+      error = "Enter valid candidate, round, and time limits.";
+    else if (
+      options.find !== null &&
+      (!Number.isInteger(options.find) || options.find <= 0 ||
+        (!supported && options.find > 50000))
+    )
+      error = "Enter a positive whole-number finding goal, or leave it empty.";
+    else if (
+      options.max_candidates > 0 &&
+      options.max_candidates <= number(summary.attempted)
+    )
       error = `Raise the candidate cap above ${count(summary.attempted)} already-checked candidates to continue.`;
     else if (options.find !== null && options.find <= number(summary.verified))
-      error = `Raise the finding goal above ${count(summary.verified)} verified hosts, or leave it empty.`;
-    else if (options.max_rounds <= number(summary.round))
+      error = `Raise the finding goal above ${count(summary.verified)} DNS-resolved hosts, or leave it empty.`;
+    else if (
+      options.max_rounds > 0 &&
+      options.max_rounds <= number(summary.round)
+    )
       error = `Raise the round cap above ${count(summary.round)} completed rounds to continue.`;
     const payload = { options };
     if (providerName(state.scan) !== "none") {
       payload.budget_usd = Number($("resume-budget").value);
       if (
+        !String($("resume-budget").value).trim() ||
+        !Number.isFinite(payload.budget_usd) ||
+        payload.budget_usd < 0 ||
+        (!supported && payload.budget_usd > 1000) ||
         payload.budget_usd <
         number(ledger?.spent_usd ?? ledger?.spent) +
           number(ledger?.reserved_usd ?? ledger?.reserved)
       )
         error =
-          "The total AI budget must cover previous spending and any reserved usage.";
+          "Enter a finite, nonnegative total AI budget covering previous spending and any reserved usage.";
     }
     if (predictionProvider(state.scan)) {
       const predictionLedger = summary.prediction_ledger;
@@ -1476,6 +1860,9 @@
           number(predictionLedger?.reserved_usd ?? predictionLedger?.reserved),
       );
       if (
+        !String($("resume-prediction-budget").value).trim() ||
+        payload.prediction_budget_usd < 0 ||
+        (!supported && payload.prediction_budget_usd > 1000) ||
         !Number.isFinite(payload.prediction_budget_usd) ||
         payload.prediction_budget_usd < minimum
       )

@@ -57,9 +57,23 @@ checkpoints or browser storage; restarting the server requires entering one agai
 Open the plain local URL without a dashboard token or login. Do not expose this
 local-only server publicly; other applications on your computer can access it.
 
+Select a hostname to inspect **Origin & proposal evidence** separately from its
+DNS results: exact public collectors and saved source records, or the generating
+pattern/model, rationale, and verified seed cohort. Certificate dates and
+MerkleMap first-seen timestamps are not current DNS evidence. Older scans expose their
+saved collector memberships but explicitly label details they did not record.
+
+Verified DNS answers can also expose in-scope CNAME targets. These appear as
+**Observed CNAME targets** in the evidence panel and become candidates for
+independent DNS validation; merely appearing in a CNAME chain does not count as
+a finding. Literal parent hostnames of verified names are also checked, rather
+than assumed to resolve. Both paths obey the same scope, depth, wildcard, and
+candidate limits as other discovery.
+
 Without supplied subdomains, `scan` first collects historical names from
-certificate transparency (`crt.sh`), HackerTarget, and optional `subfinder` if
-installed, then validates them and common service names. With a starting
+certificate transparency (`crt.sh`), optional keyless `subfinder` if installed,
+and MerkleMap if configured, then validates them and common service
+names. With a starting
 subdomain, it verifies that seed and expands its naming context; public-source
 collection is skipped by default but can be enabled with `--passive`.
 Use `--scope dev.example.com` to keep a scan inside a narrower zone, or
@@ -67,12 +81,40 @@ Use `--scope dev.example.com` to keep a scan inside a narrower zone, or
 discovery can guide further expansion. Passive sources may fail, truncate, or
 contain stale names; those limits are reported, and only current DNS findings
 appear on stdout. Scanning uses passive lookups and DNS, not HTTP path probing.
+HackerTarget is not queried directly and is explicitly excluded from subfinder.
+When intake reaches its remaining candidate capacity, passive names are sampled
+across naming families instead of admitting only the earliest collector output.
+The crt.sh collector combines certificate `name_value` and `common_name` fields;
+malformed individual records do not discard other usable observations, but the
+response is reported as partial.
 
-The default is free deterministic discovery (`--provider none`), bounded by
+To add your paid MerkleMap search subscription, add a top-level
+`"MERKLEMAP_API_KEY": "..."` string to a supported JSON config, such as
+`~/.config/enumeraite/config.json`. Alternatively, export the key:
+
+```bash
+export MERKLEMAP_API_KEY='...'
+enumeraite scan example.com --passive
+# Or: enumeraite ui
+```
+
+The selected JSON file takes precedence over the environment; an explicit blank
+file value disables MerkleMap. Without either key source, it is skipped. `.env`
+files are not loaded automatically. Protect a credential-bearing config with
+`chmod 600`. MerkleMap uses your API quota separately from AI budgets; its key is
+not saved in scan checkpoints or reports.
+
+The default uses deterministic generation (`--provider none`), bounded by
 1,000 unique DNS candidates, five minutes, and ten expansion rounds. A finding
 goal is best effort: `--find 100` counts unique verified subdomains, including
 previously known names, and other limits can stop the scan sooner. No scan can
 promise to find every subdomain.
+
+Resuming after increasing the candidate cap can admit saved CNAME targets that
+previously did not fit. Checkpoints from the earlier pattern-paging version also
+make newly supported expansions eligible once, without resetting completed DNS
+attempts or recorded model spend. Existing round, time, depth, and budget limits
+still apply.
 
 For AI-assisted expansion, configure a provider and request a budget:
 
@@ -166,6 +208,7 @@ enumeraite scan example.com --find 100 --tree
 enumeraite scan example.com --time 30m --rounds 100 --max-candidates 5000
 enumeraite scan example.com --workers 20 --rate 25 --known-limit 500
 enumeraite scan example.com --resume --time 10m --max-candidates 5000 --rounds 20
+enumeraite scan example.com --max-candidates 0 --rounds 0 --time 0
 enumeraite scan example.com --seeds known-subs.txt --no-passive
 enumeraite scan example.com --json -o scan-report.json
 ```
@@ -189,6 +232,14 @@ DNS workers share one global rate limit, including wildcard checks, and one
 discovery queue rather than multiplying the limits for every host. The candidate
 cap includes passive names. `--max-depth` bounds discovery depth and nested DNS
 labels; `--max-number` bounds numeric alternatives while preserving padding.
+
+For open-ended discovery, choose **Run until paused** in the dashboard's start
+or resume settings, or use `--max-candidates 0 --rounds 0 --time 0` in the CLI.
+These remove total-work stops, not DNS rate/concurrency, scope, depth, numeric,
+or explicit spending controls. Leave the finding goal empty to remove that
+stop too. You can rerun a target without a saved-session quota. Discovery can
+still exhaust its available hypotheses, and larger scans use more memory and
+disk. Existing finite defaults remain unchanged.
 
 Checkpoints are saved automatically under
 `$XDG_STATE_HOME/enumeraite/<target>/`, or `~/.local/state/enumeraite/<target>/`

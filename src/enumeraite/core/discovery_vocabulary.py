@@ -17,7 +17,6 @@ from typing import Any, Sequence
 VOCABULARY_PROTOCOL_VERSION = 1
 MAX_LAYOUTS = 24
 MAX_RESPONSE_BYTES = 65_536
-MAX_EXCLUSIONS = 50_000
 _MAX_EVIDENCE = 256
 _MAX_INDEX = 4096
 _MAX_LAYOUT_BYTES = 24_000
@@ -203,12 +202,8 @@ def build_vocabulary_layouts(
 
 def vocabulary_exclusions(values: Sequence[str], target: str) -> tuple[str, ...]:
     _target(target)
-    if (
-        isinstance(values, (str, bytes))
-        or not isinstance(values, Sequence)
-        or len(values) > MAX_EXCLUSIONS
-    ):
-        raise ValueError("vocabulary exclusions must be a sequence of at most 50,000 names")
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ValueError("vocabulary exclusions must be a sequence of names")
     if any(
         not _dns_name(name) or not (name == target or name.endswith("." + target))
         for name in values

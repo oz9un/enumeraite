@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import ipaddress
 import math
 import re
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from itertools import groupby
 from typing import Any, Callable, Sequence, TypeVar
+
+from anthropic import APITimeoutError as AnthropicTimeoutError
+from openai import APITimeoutError as OpenAITimeoutError
 
 from .discovery_context import model_batch_context
 from .discovery_metrics import discovery_method_counts
@@ -21,8 +26,10 @@ from .discovery_plans import (
     plan_id,
 )
 from .discovery_vocabulary import VOCABULARY_PROTOCOL_VERSION, build_vocabulary_layouts
+from .dns_evidence import validate_dns_evidence
 from .engine import GenerationEngine
-from .passive import collect_passive, normalize_domain
+from .origin_evidence import validate_origin_evidence
+from .passive import _sample_names, collect_passive, normalize_domain
 from .prompt_spec import SUBDOMAIN_SPEC
 from .scan_budget import BudgetExhausted, ScanPaused, SpendLedger, attach_scan_guard
 from .strategies import SubdomainDiscoveryStrategy
@@ -127,7 +134,7 @@ BOOTSTRAP_LABELS = (
     "events",
 )
 STATE_VERSION = 1
-PATTERN_PAGING_VERSION = 1
+PATTERN_PAGING_VERSION = 2
 _NUMERIC_RUNS = re.compile(r"([0-9]+)")
 _LITERAL_WORDS = re.compile(r"[a-z]+")
 
@@ -138,6 +145,7 @@ def normalize_target(value: str) -> str:
 
 @dataclass
 class ScanOptions:
+    # Zero disables each total-work limit; per-wave and DNS safeguards still apply.
     max_candidates: int = 1000
     max_rounds: int = 10
     find: int | None = None
@@ -161,8 +169,6 @@ class ScanOptions:
 
     def __post_init__(self) -> None:
         bounds = {
-            "max_candidates": (1, 50000),
-            "max_rounds": (1, 100),
             "workers": (1, 100),
             "batch_size": (1, 200),
             "known_limit": (1, 5000),
@@ -175,9 +181,20 @@ class ScanOptions:
             value = getattr(self, name)
             if type(value) is not int or not minimum <= value <= maximum:
                 raise ValueError(f"{name} must be an integer between {minimum} and {maximum}")
-        if self.find is not None and (type(self.find) is not int or not 1 <= self.find <= 50000):
-            raise ValueError("find must be an integer between 1 and 50000")
-        for name, maximum in (("time_limit", 86400), ("rate", 1000), ("dns_timeout", 30)):
+        for name in ("max_candidates", "max_rounds"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer (0 means no limit)")
+        if self.find is not None and (type(self.find) is not int or self.find < 1):
+            raise ValueError("find must be a positive integer")
+        if (
+            isinstance(self.time_limit, bool)
+            or not isinstance(self.time_limit, (int, float))
+            or not math.isfinite(self.time_limit)
+            or self.time_limit < 0
+        ):
+            raise ValueError("time_limit must be finite and nonnegative (0 means no limit)")
+        for name, maximum in (("rate", 1000), ("dns_timeout", 30)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{name} must be numeric")
@@ -198,7 +215,7 @@ def validate_checkpoint(state: dict, target: str) -> None:
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("Checkpoint has invalid scan options") from exc
     nodes = state.get("nodes")
-    if not isinstance(nodes, list) or len(nodes) > 50000:
+    if not isinstance(nodes, list):
         raise ValueError("Checkpoint has invalid discovery nodes")
     seen: set[str] = set()
     depths: dict[str, int] = {}
@@ -221,7 +238,7 @@ def validate_checkpoint(state: dict, target: str) -> None:
         if node.get("status") not in {"pending", "verified", "miss", "wildcard", "inconclusive"}:
             raise ValueError("Checkpoint contains an invalid validation status")
         for field in ("round", "depth", "expanded_revision", "attempts"):
-            if type(node.get(field)) is not int or not 0 <= node[field] <= 50000:
+            if type(node.get(field)) is not int or node[field] < 0:
                 raise ValueError("Checkpoint contains invalid discovery counters")
         if node["depth"] > 10 or node["attempts"] > 2:
             raise ValueError("Checkpoint discovery depth or retry count exceeds its limit")
@@ -238,18 +255,22 @@ def validate_checkpoint(state: dict, target: str) -> None:
             raise ValueError("Checkpoint contains invalid DNS addresses")
         for address in addresses:
             ipaddress.ip_address(address)
+        if "dns_evidence" in node:
+            validate_dns_evidence(node["dns_evidence"], value, target)
+        if "origin_evidence" in node:
+            validate_origin_evidence(node["origin_evidence"], value, target)
     for field in ("round", "attempted", "stale"):
-        if type(state.get(field)) is not int or not 0 <= state[field] <= 50000:
+        if type(state.get(field)) is not int or state[field] < 0:
             raise ValueError("Checkpoint contains invalid session counters")
     model_batches = state.get("model_batches", 0)
-    if type(model_batches) is not int or not 0 <= model_batches <= 50000:
+    if type(model_batches) is not int or model_batches < 0:
         raise ValueError("Checkpoint contains invalid model batch counter")
     vocabulary_version = state.get("vocabulary_protocol_version", VOCABULARY_PROTOCOL_VERSION)
     if type(vocabulary_version) is not int or vocabulary_version != VOCABULARY_PROTOCOL_VERSION:
         raise ValueError("Checkpoint contains unsupported vocabulary protocol version")
     if "pattern_paging_version" in state and (
         type(state["pattern_paging_version"]) is not int
-        or state["pattern_paging_version"] != PATTERN_PAGING_VERSION
+        or not 1 <= state["pattern_paging_version"] <= PATTERN_PAGING_VERSION
     ):
         raise ValueError("Checkpoint contains unsupported pattern paging version")
     if state["attempted"] != sum(node["attempts"] > 0 for node in nodes):
@@ -315,7 +336,7 @@ def validate_checkpoint(state: dict, target: str) -> None:
             not isinstance(prediction, dict)
             or set(prediction) != {"round", "plan_id", "description", "score", "status", "count"}
             or type(prediction["round"]) is not int
-            or not 0 <= prediction["round"] <= 50000
+            or prediction["round"] < 0
             or type(prediction["count"]) is not int
             or not 0 <= prediction["count"] <= 200
             or prediction["status"] not in {"scored", "fallback"}
@@ -415,8 +436,8 @@ class DiscoverySession:
         self.state.setdefault("predictions", [])
         self.state.setdefault("model_batches", 0)
         self.state.setdefault("vocabulary_protocol_version", VOCABULARY_PROTOCOL_VERSION)
-        # Older scans marked a parent finished after its first output page.
-        # Reopen those parents once without deleting history or resetting caps.
+        # Revisit exhausted parents after recipe or paging changes, retaining
+        # checked names, request counters, spending, and user limits.
         self.state["pattern_paging_version"] = PATTERN_PAGING_VERSION
         self.nodes = {node["value"]: node for node in self.state["nodes"]}
         if expansion_changed:
@@ -425,9 +446,10 @@ class DiscoverySession:
                 if node["status"] == "verified":
                     node["expanded_revision"] = 0
         self.started = clock()
-        self.deadline = self.started + options.time_limit
+        self.deadline = self.started + options.time_limit if options.time_limit else None
         self.prior_elapsed = self.state["elapsed_seconds"]
         self.model_enabled = provider is not None
+        self._model_stop_reason: str | None = None
         if provider is not None:
             if ledger is None:
                 raise ValueError("AI scanning requires a spend ledger")
@@ -468,8 +490,23 @@ class DiscoverySession:
 
     def _node_event(self, kind: str, node: dict) -> None:
         # Event consumers can retain or decorate snapshots without changing the
-        # checkpoint, including its otherwise-shared nested address list.
-        self.event(kind, {**node, "addresses": list(node["addresses"])})
+        # checkpoint, including nested DNS observation records.
+        self.event(kind, copy.deepcopy(node))
+
+    def _enqueue_dns_aliases(self, node: dict) -> None:
+        evidence = node.get("dns_evidence")
+        if evidence is None:
+            return
+        for alias in evidence.get("aliases", ()):
+            if alias not in self.nodes:
+                self._enqueue(
+                    alias,
+                    source="dns",
+                    parent=node["value"],
+                    reason="CNAME target observed in a DNS answer; independently verified next",
+                    depth=node["depth"] + 1,
+                    origin_evidence={"evidence": [node["value"]]},
+                )
 
     def _enqueue(
         self,
@@ -480,6 +517,7 @@ class DiscoverySession:
         pattern: str = "",
         reason: str = "",
         depth: int = 0,
+        origin_evidence: dict[str, Any] | None = None,
     ) -> bool:
         value = value.strip().lower().rstrip(".")
         if (
@@ -488,15 +526,19 @@ class DiscoverySession:
             or not value.endswith("." + self.target)
             or depth > self.options.max_depth
             or len(value[: -(len(self.target) + 1)].split(".")) > self.options.max_depth
-            or len(self.nodes) >= self.options.max_candidates
+            or not self._candidate_capacity(1)
         ):
             return False
+        origin = copy.deepcopy(origin_evidence) if origin_evidence is not None else {}
+        origin["queued_at"] = datetime.now(timezone.utc).isoformat()
+        validate_origin_evidence(origin, value, self.target)
         node = {
             "value": value,
             "parent": parent,
             "source": safe_model_text(source, 1000),
             "pattern": safe_model_text(pattern, 1000),
             "reason": safe_model_text(reason, 1000),
+            "origin_evidence": origin,
             "round": self.state["round"],
             "depth": depth,
             "expanded_revision": 0,
@@ -509,6 +551,12 @@ class DiscoverySession:
         self.state["nodes"].append(node)
         self._node_event("candidate", node)
         return True
+
+    def _candidate_capacity(self, count: int) -> int:
+        """Fit one bounded wave within the optional total candidate cap."""
+        if not self.options.max_candidates:
+            return count
+        return min(count, max(0, self.options.max_candidates - len(self.nodes)))
 
     def _pending_allowed(self, node: dict) -> bool:
         """Keep saved work dormant when current depth/numeric limits exclude it."""
@@ -577,19 +625,26 @@ class DiscoverySession:
             return "paused; scan saved"
         if self.options.find is not None and len(self.findings) >= self.options.find:
             return "verified target reached"
-        if self.clock() >= self.deadline:
+        if self.deadline is not None and self.clock() >= self.deadline:
             return "time limit reached"
-        retry_pending = any(
-            self._pending_allowed(node) and node["attempts"] > 0 for node in self.nodes.values()
-        )
-        if self.state["attempted"] >= self.options.max_candidates and not retry_pending:
-            return "candidate limit reached"
+        if self.options.max_candidates and self.state["attempted"] >= self.options.max_candidates:
+            retry_pending = any(
+                self._pending_allowed(node) and node["attempts"] > 0 for node in self.nodes.values()
+            )
+            if not retry_pending:
+                return "candidate limit reached"
         return None
 
-    def _initialize(self, seeds: Sequence[str]) -> None:
+    def _initialize(self, seeds: Sequence[str], *, prior_names: Sequence[str] = ()) -> None:
         for seed in seeds:
             self._enqueue(
                 seed, source="seed", reason="User-supplied name queued for DNS verification"
+            )
+        for name in prior_names:
+            self._enqueue(
+                name,
+                source="history",
+                reason="Previously DNS-verified in a saved scan; queued for fresh DNS verification",
             )
         if self.options.passive:
             self.event(
@@ -599,19 +654,53 @@ class DiscoverySession:
             try:
                 result = self.passive_fetch(
                     self.target,
-                    timeout=min(10.0, self.options.time_limit),
-                    max_results=min(self.options.known_limit, self.options.max_candidates),
+                    timeout=min(10.0, self.options.time_limit) if self.options.time_limit else 10.0,
+                    max_results=(
+                        min(self.options.known_limit, self.options.max_candidates)
+                        if self.options.max_candidates
+                        else self.options.known_limit
+                    ),
                     deadline=self.deadline,
                 )
                 self.state["passive_sources"] = result.sources
-                self.state["passive_truncated"] = result.truncated
-                for name in result.names:
-                    self._enqueue(
-                        name, source="passive", reason="Previously observed by passive sources"
-                    )
+                eligible = {
+                    name
+                    for name in result.names
+                    if name not in self.nodes
+                    and SUBDOMAIN_SPEC.validator(name)
+                    and name.endswith("." + self.target)
+                    and len(name[: -(len(self.target) + 1)].split(".")) <= self.options.max_depth
+                }
+                capacity = self._candidate_capacity(len(eligible))
+                selected = _sample_names(eligible, self.target, capacity) if capacity else []
+                self.state["passive_truncated"] = result.truncated or len(eligible) > capacity
+                # Preserve provenance for existing seeds, then fairly allocate
+                # only the remaining candidate slots across eligible families.
+                retained = [name for name in result.names if name in self.nodes]
+                for name in (*retained, *selected):
+                    records = result.evidence.get(name, [])
+                    origin = {"passive": records} if records else None
+                    if name in self.nodes and records:
+                        # A supplied seed may also be independently present in
+                        # public sources. Preserve its first-queued method.
+                        node = self.nodes[name]
+                        combined = {
+                            **node.get("origin_evidence", {}),
+                            "passive": copy.deepcopy(records),
+                        }
+                        validate_origin_evidence(combined, name, self.target)
+                        node["origin_evidence"] = combined
+                        self._node_event("candidate", node)
+                    else:
+                        self._enqueue(
+                            name,
+                            source="passive",
+                            reason="Previously observed by passive sources",
+                            origin_evidence=origin,
+                        )
                 for error in result.errors:
                     self._warn(error)
-                if result.truncated:
+                if self.state["passive_truncated"]:
                     self._warn(
                         "Passive results were capped; this is a partial view of known names."
                     )
@@ -637,8 +726,10 @@ class DiscoverySession:
             # Preserve the original small-scan allowance. A larger fallback
             # must not fill a tight candidate budget before evidence-guided
             # discovery gets a turn; spend at most 10% beyond that allowance.
-            remaining = self.options.max_candidates - len(self.nodes)
-            bootstrap_limit = min(len(BOOTSTRAP_LABELS), max(20, remaining // 10))
+            bootstrap_limit = len(BOOTSTRAP_LABELS)
+            if self.options.max_candidates:
+                remaining = self.options.max_candidates - len(self.nodes)
+                bootstrap_limit = min(bootstrap_limit, max(20, remaining // 10))
             for label in BOOTSTRAP_LABELS[:bootstrap_limit]:
                 self._enqueue(
                     f"{label}.{self.target}", source="bootstrap", reason="Common service hypothesis"
@@ -653,7 +744,11 @@ class DiscoverySession:
             count = min(count, self.options.find - len(self.findings))
         retries = [value for value in pending if self.nodes[value]["attempts"] > 0]
         new_values = [value for value in pending if self.nodes[value]["attempts"] == 0]
-        available = max(0, self.options.max_candidates - self.state["attempted"])
+        available = (
+            max(0, self.options.max_candidates - self.state["attempted"])
+            if self.options.max_candidates
+            else count
+        )
         values = (retries + new_values[:available])[:count]
         if not values or self.stop_requested():
             return 0
@@ -671,11 +766,18 @@ class DiscoverySession:
         for value in values:
             node = self.nodes[value]
             outcome = by_value.get(value)
+            evidence = getattr(outcome, "dns_evidence", None)
+            if evidence is not None:
+                node["dns_evidence"] = copy.deepcopy(evidence)
             if getattr(outcome, "cancelled", False) or (outcome is None and self.stop_requested()):
                 # A paused rate waiter or partially checked record is unfinished
                 # work. It must not become a miss or consume the retry allowance.
                 self._node_event("result", node)
                 continue
+            if evidence is None:
+                # A generic validator result cannot substantiate old evidence
+                # for a newly completed attempt.
+                node.pop("dns_evidence", None)
             if node["attempts"] == 0:
                 self.state["attempted"] += 1
             node["attempts"] += 1
@@ -692,6 +794,7 @@ class DiscoverySession:
                 node["addresses"] = list(outcome.ip_addresses)[:100]
                 hits += 1
                 self._node_event("finding", node)
+                self._enqueue_dns_aliases(node)
             else:
                 node["status"] = "miss"
             self._node_event("result", node)
@@ -708,11 +811,7 @@ class DiscoverySession:
         # Give an explicitly selected model a bounded first turn on verified
         # evidence. Otherwise a broad deterministic frontier can consume every
         # remaining candidate slot before hosted generation ever gets a chance.
-        if (
-            self.model_enabled
-            and not self._stop()
-            and len(self.nodes) < self.options.max_candidates
-        ):
+        if self.model_enabled and not self._stop() and self._candidate_capacity(1):
             added += self._model_candidates(evidence)
         self.event(
             "phase",
@@ -757,18 +856,17 @@ class DiscoverySession:
         # are not enqueued until planning ends, so this snapshot stays current.
         pattern_context = (
             build_pattern_context(evidence, self.target, exclude=self.nodes)
-            if frontier and len(self.nodes) < self.options.max_candidates and not self._stop()
+            if frontier and self._candidate_capacity(1) and not self._stop()
             else None
         )
         # Empty pages must not hide productive later parents. Bound planning
         # CPU and paid context independently of the maximum DNS candidate cap.
         for offset in range(0, len(frontier), 200):
-            capacity = self.options.max_candidates - len(self.nodes)
-            if capacity <= 0 or self._stop():
+            if not self._candidate_capacity(1) or self._stop():
                 break
             groups = []
             for node in frontier[offset : offset + 200]:
-                if self.stop_requested() or self.clock() >= self.deadline:
+                if self._stop():
                     break
                 groups.append(
                     (
@@ -822,9 +920,9 @@ class DiscoverySession:
                 status = node["status"]
                 feedback[status] = feedback.get(status, 0) + 1
         offered.extend(grouped.values())
-        allowance = min(wave_size, self.options.max_candidates - len(self.nodes))
+        allowance = self._candidate_capacity(wave_size)
         selected = self._admit_plans(offered, min(24, allowance))
-        if self._stop() or len(self.nodes) >= self.options.max_candidates:
+        if self._stop() or not self._candidate_capacity(1):
             self.save()
             return bool(added)
         # Admission depends only on metadata. Full numeric pages are needed
@@ -870,6 +968,13 @@ class DiscoverySession:
                         pattern=proposal.pattern,
                         reason=proposal.reason,
                         depth=parent["depth"] + 1,
+                        origin_evidence={
+                            "plan_id": plan.id,
+                            "plan_description": plan.description,
+                            "evidence": plan.evidence[:5],
+                            "confidence": proposal.confidence,
+                            "numeric_ceiling": self.options.max_number,
+                        },
                     ):
                         added += 1
                         accepted += 1
@@ -943,7 +1048,11 @@ class DiscoverySession:
                         for node in self.state["nodes"][-40:]
                         if node["status"] != "pending"
                     ],
-                    "remaining_candidates": self.options.max_candidates - len(self.nodes),
+                    "remaining_candidates": (
+                        max(0, self.options.max_candidates - len(self.nodes))
+                        if self.options.max_candidates
+                        else None
+                    ),
                     "round": self.state["round"],
                 },
                 [plan.context() for plan in plans],
@@ -988,12 +1097,14 @@ class DiscoverySession:
         return sorted(plans, key=lambda plan: -scores.get(plan.id, plan.priority))
 
     def _model_candidates(self, evidence: list[str]) -> int:
-        remaining = self.options.max_candidates - len(self.nodes)
-        if remaining <= 0 or self._stop():
+        if not self._candidate_capacity(1) or self._stop():
             return 0
         # Three different questions are more useful than repeatedly refilling
         # one answer. Keep room for cheap Python expansion in the same wave.
-        allowance = min(60, remaining - min(40, remaining // 3))
+        allowance = 60
+        if self.options.max_candidates:
+            remaining = self.options.max_candidates - len(self.nodes)
+            allowance = min(allowance, remaining - min(40, remaining // 3))
         added = 0
         limit_calls = getattr(self.provider, "set_runtime_batch_limit", None)
         try:
@@ -1002,7 +1113,7 @@ class DiscoverySession:
             for _ in range(3):
                 if not self.model_enabled or self._stop() or added >= allowance:
                     break
-                count = min(20, allowance - added, self.options.max_candidates - len(self.nodes))
+                count = self._candidate_capacity(min(20, allowance - added))
                 added += self._model_batch(evidence, count)
                 # Persist successful names before another paid request can
                 # fail, hit a budget boundary, or be interrupted.
@@ -1027,6 +1138,7 @@ class DiscoverySession:
             )
         ):
             self.model_enabled = False
+            self._model_stop_reason = "AI budget exhausted"
             self._warn("AI budget exhausted; continuing free pattern discovery.")
             return 0
         batch_index = self.state["model_batches"]
@@ -1034,7 +1146,7 @@ class DiscoverySession:
         if not seeds:
             return 0
         # Replace an existing semantic pass only when Python can supply a
-        # witnessed finite layout. No empty/error answer triggers a paid retry.
+        # witnessed finite layout. Empty/invalid answers never trigger paid retries.
         layouts = (
             build_vocabulary_layouts(seeds, self.target)
             if self.options.vocabulary_breadth and batch_index % 3 == 2
@@ -1072,21 +1184,39 @@ class DiscoverySession:
             )
         self.provider.set_runtime_context(instructions + "\n\n" + feedback)
         try:
-            if layouts:
-                result = self.provider.generate_subdomain_vocabulary(
-                    layouts,
-                    self.target,
-                    count,
-                    instructions=instructions + "\n\n" + feedback,
-                    exclusions=list(self.nodes),
-                )
-            else:
-                result = GenerationEngine(self.provider).generate_paths(
-                    seeds,
-                    self.target,
-                    count,
-                    strategy=SubdomainDiscoveryStrategy(),
-                )
+            # SDK retries are disabled by the spend guard. Recover timeouts here
+            # so every attempt gets its own durable reservation and uncertain
+            # charge. Three attempts bound even free, open-ended scans.
+            for attempt in range(3):
+                if self._stop():
+                    return 0
+                try:
+                    if layouts:
+                        result = self.provider.generate_subdomain_vocabulary(
+                            layouts,
+                            self.target,
+                            count,
+                            instructions=instructions + "\n\n" + feedback,
+                            exclusions=list(self.nodes),
+                        )
+                    else:
+                        result = GenerationEngine(self.provider).generate_paths(
+                            seeds,
+                            self.target,
+                            count,
+                            strategy=SubdomainDiscoveryStrategy(),
+                        )
+                    break
+                except (TimeoutError, OpenAITimeoutError, AnthropicTimeoutError):
+                    if self._stop():
+                        return 0
+                    if attempt == 2:
+                        raise
+                    self._warn(
+                        "AI request timed out; retrying within the remaining scan budget "
+                        f"(attempt {attempt + 2}/3)."
+                    )
+                    self.save()
             rationales = result.metadata.get("rationales", {})
             if not isinstance(rationales, dict):
                 rationales = {}
@@ -1095,18 +1225,32 @@ class DiscoverySession:
                 provenance = {}
             witnessed = {layout.plan_id: layout for layout in layouts}
             added = 0
-            for value in result.paths[:count]:
+            for index, value in enumerate(result.paths[:count]):
                 proof = provenance.get(value, {})
                 plan_id = proof.get("plan_id") if isinstance(proof, dict) else None
                 layout = witnessed.get(plan_id) if isinstance(plan_id, str) else None
                 word = proof.get("word") if isinstance(proof, dict) else None
                 pattern = ""
+                origin = {
+                    "provider": self.state["provider"]["name"],
+                    "model": self.state["provider"]["model"],
+                    "focus": focus,
+                    "batch": self.state["model_batches"],
+                    "evidence": seeds,
+                    "confidence": result.confidence_scores[index],
+                }
                 if (
                     layout is not None
                     and isinstance(word, str)
                     and layout.template.replace("{value}", word) + "." + self.target == value
                 ):
                     pattern = layout.template + "." + self.target
+                    origin.update(
+                        evidence=list(layout.evidence),
+                        plan_id=layout.plan_id,
+                        layout=layout.template,
+                        word=word,
+                    )
                 added += self._enqueue(
                     value,
                     source="model",
@@ -1117,6 +1261,7 @@ class DiscoverySession:
                         else "Model hypothesis from verified evidence"
                     ),
                     depth=0,
+                    origin_evidence=origin,
                 )
             self.event(
                 "phase",
@@ -1131,21 +1276,31 @@ class DiscoverySession:
             self.model_enabled = False
         except BudgetExhausted:
             self.model_enabled = False
+            self._model_stop_reason = "AI budget exhausted"
             self._warn("AI budget exhausted; continuing free pattern discovery.")
+        except (TimeoutError, OpenAITimeoutError, AnthropicTimeoutError) as exc:
+            self.model_enabled = False
+            self._model_stop_reason = "AI timeout recovery exhausted"
+            self._warn(
+                "AI timeout recovery exhausted; continuing free pattern discovery: "
+                + safe_exception_text(exc)
+            )
         except Exception as exc:
             self.model_enabled = False
+            self._model_stop_reason = "AI provider failed"
             self._warn("AI generation stopped: " + safe_exception_text(exc))
         return 0
 
-    def run(self, seeds: Sequence[str] = ()) -> dict:
+    def run(self, seeds: Sequence[str] = (), *, prior_names: Sequence[str] = ()) -> dict:
         try:
-            for value in self.findings:
+            known = self.findings
+            for value in known:
                 self._node_event("finding", self.nodes[value])
             if self.stop_requested():
                 self.state["stop_reason"] = "paused; scan saved"
                 return self.summary()
             if not self.state["initialized"]:
-                self._initialize(seeds)
+                self._initialize(seeds, prior_names=prior_names)
             else:
                 # Retry transient DNS failures once on resume, without treating
                 # timeouts as evidence that a hostname does not exist.
@@ -1154,6 +1309,8 @@ class DiscoverySession:
                         node["status"] = "pending"
                 for seed in seeds:
                     self._enqueue(seed, source="seed", reason="Additional user-supplied seed")
+            for value in known:
+                self._enqueue_dns_aliases(self.nodes[value])
             round_hits = 0
             round_validated = False
             while True:
@@ -1175,7 +1332,7 @@ class DiscoverySession:
                 if self.options.stale_rounds and self.state["stale"] >= self.options.stale_rounds:
                     self.state["stop_reason"] = "diminishing returns"
                     break
-                if self.state["round"] >= self.options.max_rounds:
+                if self.options.max_rounds and self.state["round"] >= self.options.max_rounds:
                     self.state["stop_reason"] = "round limit reached"
                     break
                 if not self._expand():
@@ -1183,7 +1340,11 @@ class DiscoverySession:
                     self.state["stop_reason"] = self._stop() or (
                         "remaining queued work is outside current limits"
                         if dormant
-                        else "frontier exhausted"
+                        else (
+                            self._model_stop_reason + "; deterministic frontier exhausted"
+                            if self._model_stop_reason
+                            else "frontier exhausted"
+                        )
                     )
                     break
         except KeyboardInterrupt:
@@ -1198,7 +1359,7 @@ class DiscoverySession:
             "findings": self.findings,
             "verified": len(self.findings),
             "known_verified": sum(
-                node["status"] == "verified" and node["source"] in {"seed", "passive"}
+                node["status"] == "verified" and node["source"] in {"seed", "passive", "history"}
                 for node in self.nodes.values()
             ),
             "attempted": self.state["attempted"],

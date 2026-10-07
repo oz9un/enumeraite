@@ -7,11 +7,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import dns.exception
 import dns.resolver
 
+from .dns_evidence import new_dns_evidence
 from .dns_validator import DNSResult
 from .prompt_spec import SUBDOMAIN_SPEC
 from .text_safety import safe_exception_text
@@ -22,6 +23,7 @@ class ScanDNSResult(DNSResult):
     """Cancellation is unfinished work, not negative DNS evidence."""
 
     cancelled: bool = False
+    dns_evidence: dict[str, Any] | None = None
 
 
 class ScanDNS:
@@ -57,27 +59,33 @@ class ScanDNS:
         self._parent_locks: dict[str, threading.Lock] = {}
         self.query_count = 0
 
-    def _slot(self, deadline: float) -> bool:
+    def _slot(self, deadline: float | None) -> bool:
         with self._rate_lock:
             if self._cancel.is_set():
                 return False
             now = time.monotonic()
             scheduled = max(now, self._next_query)
-            if scheduled >= deadline:
+            if deadline is not None and scheduled >= deadline:
                 return False
             self._next_query = scheduled + 1 / self.rate
         delay = scheduled - time.monotonic()
         if delay > 0 and self._cancel.wait(delay):
             return False
-        return not self._cancel.is_set() and time.monotonic() < deadline
+        return not self._cancel.is_set() and (deadline is None or time.monotonic() < deadline)
 
     def _resolve(
-        self, name: str, deadline: float, *, probe: bool = False, candidate: str | None = None
+        self,
+        name: str,
+        deadline: float | None,
+        *,
+        probe: bool = False,
+        candidate: str | None = None,
     ) -> ScanDNSResult:
         started = time.monotonic()
         addresses: set[str] = set()
         errors = []
         cancelled = False
+        evidence = None
         resolver = dns.resolver.Resolver()
         for kind in ("A", "AAAA"):
             if not self._slot(deadline):
@@ -86,7 +94,11 @@ class ScanDNS:
                     "scan cancelled" if self._cancel.is_set() else "scan deadline reached"
                 )
                 break
-            remaining = min(self.timeout, deadline - time.monotonic())
+            remaining = (
+                min(self.timeout, deadline - time.monotonic())
+                if deadline is not None
+                else self.timeout
+            )
             if remaining <= 0:
                 errors.append("scan deadline reached")
                 break
@@ -99,6 +111,8 @@ class ScanDNS:
                     self.query_count += 1
                     query_id = self.query_count
                     self._last_query = time.monotonic()
+                if not probe and evidence is None:
+                    evidence = new_dns_evidence(name)
                 payload = {
                     "query_id": query_id,
                     "worker_id": threading.current_thread().name,
@@ -115,6 +129,27 @@ class ScanDNS:
                     query_addresses = [str(record) for record in result]
                     addresses.update(query_addresses)
                     status = "answered" if query_addresses else "no_answer"
+                    if (
+                        evidence is not None
+                        and query_addresses
+                        and isinstance(result, dns.resolver.Answer)
+                    ):
+                        # Only the chain dnspython actually followed is evidence;
+                        # unrelated answer-section CNAMEs and probe answers are not.
+                        aliases = evidence.get("aliases")
+                        for rrset in result.chaining_result.cnames:
+                            if aliases is not None and len(aliases) >= 16:
+                                break
+                            alias = rrset[0].target.to_text(omit_final_dot=True).lower()
+                            if (
+                                alias != name
+                                and alias.endswith("." + self.target)
+                                and SUBDOMAIN_SPEC.validator(alias)
+                                and (aliases is None or alias not in aliases)
+                            ):
+                                if aliases is None:
+                                    aliases = evidence["aliases"] = []
+                                aliases.append(alias)
                 except dns.resolver.NXDOMAIN:
                     status = "nxdomain"
                     if probe and addresses:
@@ -131,6 +166,12 @@ class ScanDNS:
                     error = safe_exception_text(exc, 180)
                     errors.append(error)
                 finally:
+                    if evidence is not None:
+                        evidence["records"][kind] = {
+                            "status": status,
+                            "addresses": list(query_addresses[:100]),
+                            "error": error,
+                        }
                     self.event(
                         "dns_end",
                         {
@@ -143,29 +184,38 @@ class ScanDNS:
                     )
             except (dns.exception.DNSException, OSError) as exc:
                 errors.append(safe_exception_text(exc, 180))
+        response_time = max(0.0, time.monotonic() - started)
+        if evidence is not None:
+            evidence["duration_ms"] = response_time * 1000
         return ScanDNSResult(
             name,
             bool(addresses),
             sorted(addresses),
-            time.monotonic() - started,
+            response_time,
             # A partial positive candidate still establishes an address, but
             # wildcard calibration requires complete A/AAAA observations. A
             # timed-out record type may conceal a rotating wildcard pool; do
             # not cache the other type's answer as a stable complete signature.
             error="; ".join(errors) if errors and (probe or not addresses) else None,
             cancelled=cancelled,
+            dns_evidence=evidence,
         )
 
     def _wildcard(
-        self, parent: str, deadline: float, *, candidate: str | None = None
+        self, parent: str, deadline: float | None, *, candidate: str | None = None
     ) -> tuple[set[str], bool, str | None]:
         with self._cache_lock:
             if parent in self._wildcards:
                 return self._wildcards[parent]
-            # Prevent unbounded cache growth even in unusually deep namespaces.
-            if len(self._parent_locks) >= 1000 and parent not in self._parent_locks:
-                return set(), False, "wildcard calibration parent limit reached"
-            lock = self._parent_locks.setdefault(parent, threading.Lock())
+            # Overflow parents still receive ordinary conservative calibration,
+            # but retain neither a lock nor a result. Worker/rate/deadline bounds
+            # continue to apply, and active cached-parent locks are never evicted.
+            cacheable = parent in self._parent_locks or len(self._parent_locks) < 1000
+            lock = self._parent_locks.get(parent)
+            if lock is None:
+                lock = threading.Lock()
+                if cacheable:
+                    self._parent_locks[parent] = lock
         with lock:
             if self._cancel.is_set():
                 return set(), False, "scan cancelled"
@@ -202,12 +252,12 @@ class ScanDNS:
                 error = "inconsistent wildcard probe address presence"
             result = addresses, rotating, error
             # Incomplete/inconsistent calibration is retryable, not zone truth.
-            if not error:
+            if not error and cacheable:
                 with self._cache_lock:
                     self._wildcards[parent] = result
             return result
 
-    def _validate(self, name: str, deadline: float) -> DNSResult:
+    def _validate(self, name: str, deadline: float | None) -> DNSResult:
         if self._cancel.is_set():
             return ScanDNSResult(name, False, [], 0, error="scan cancelled", cancelled=True)
         if not SUBDOMAIN_SPEC.validator(name) or not name.endswith("." + self.target):
@@ -221,14 +271,21 @@ class ScanDNS:
             result.exists = False
             result.error = "wildcard calibration inconclusive: " + error
             result.cancelled = error == "scan cancelled"
+            wildcard_status = "inconclusive"
         elif rotating or (addresses and set(result.ip_addresses).issubset(addresses)):
             result.exists = False
             result.wildcard = True
+            wildcard_status = "matched"
+        else:
+            wildcard_status = "different_answer" if addresses else "not_detected"
+        if result.dns_evidence is not None:
+            result.dns_evidence["wildcard"]["status"] = wildcard_status
         return result
 
-    def validate(self, names: Sequence[str], *, deadline: float) -> list[DNSResult]:
+    def validate(self, names: Sequence[str], *, deadline: float | None) -> list[DNSResult]:
         """Share rate/deadline limits and wake queued workers when interrupted.
 
+        A missing scan deadline keeps each resolver call and rate slot bounded.
         Cancellation stops new requests and wakes every reserved rate slot.
         Already-running DNS calls unwind within their existing resolver lifetime
         (two seconds by default), after which this validator may be reused.

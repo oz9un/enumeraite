@@ -45,9 +45,9 @@ pause/resume behavior and exports.
 
 ## Implemented discovery workflow
 
-- Root-domain scans collect historical names from crt.sh, HackerTarget and an
-  optional installed, keyless subfinder. Failed, capped and timed-out sources
-  remain visible; public names are not findings until DNS verifies them.
+- Root-domain scans collect historical names from crt.sh, optional installed
+  keyless subfinder, and MerkleMap when configured. Failed, capped and timed-out
+  sources remain visible; public names are not findings until DNS verifies them.
 - Hostname input starts with that seed. An offline Public Suffix List resolves
   registrable and private-hosting boundaries. Explicit `--scope`, `--seed`
   and `--seeds` controls reject out-of-scope or over-depth input before work.

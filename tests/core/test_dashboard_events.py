@@ -174,7 +174,7 @@ def test_pause_during_wildcard_calibration_preserves_retry_allowance(monkeypatch
         if name.startswith("enumeraite-"):
             pause.set()
             raise dns.resolver.NXDOMAIN()
-        return ["192.0.2.1"]
+        return ["192.0.2.1"] if kind == "A" else ["2001:db8::1"]
 
     install_resolver(monkeypatch, resolve)
     validator = ScanDNS("example.test", rate=1000, cancel_event=pause)

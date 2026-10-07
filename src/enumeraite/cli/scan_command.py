@@ -39,8 +39,8 @@ def _duration(value: str) -> float:
     if not match:
         raise ValueError("--time accepts seconds or a duration such as 30s, 5m, 1h")
     seconds = float(match[1]) * {None: 1, "s": 1, "m": 60, "h": 3600}[match[2]]
-    if not 0 < seconds <= 86400:
-        raise ValueError("--time must be positive and no more than 24h")
+    if not math.isfinite(seconds):
+        raise ValueError("--time must be finite; use 0 for no time limit")
     return seconds
 
 
@@ -59,13 +59,16 @@ def _duration(value: str) -> float:
 @click.option(
     "--find",
     "find_count",
-    type=click.IntRange(1, 50000),
+    type=click.IntRange(min=1),
     help="Stop at N unique verified subdomains, including known names.",
 )
 @click.option(
     "--budget-usd",
     type=click.FloatRange(min=0),
-    help="Cumulative generation-token budget (default: $1 with AI); excludes optional Jev prediction.",
+    help=(
+        "Cumulative generation-token budget (default: $1 with AI); "
+        "excludes passive API charges and optional Jev prediction."
+    ),
 )
 @click.option(
     "--predictor",
@@ -75,21 +78,23 @@ def _duration(value: str) -> float:
 )
 @click.option(
     "--prediction-budget-usd",
-    type=click.FloatRange(min=0, max=1000),
+    type=click.FloatRange(min=0),
     help="Additional cumulative Jev prediction budget, separate from --budget-usd (default: $0.05 when enabled).",
 )
 @click.option(
-    "--time", "time_limit", help="Time per invocation, including passive discovery (default: 5m)."
+    "--time",
+    "time_limit",
+    help="Time per invocation, including passive discovery; 0 means no limit (default: 5m).",
 )
 @click.option(
     "--max-candidates",
-    type=click.IntRange(1, 50000),
-    help="Total unique DNS candidates, including passive names (default: 1000).",
+    type=click.IntRange(min=0),
+    help="Total unique DNS candidates, including passive names; 0 means no limit (default: 1000).",
 )
 @click.option(
     "--rounds",
-    type=click.IntRange(1, 100),
-    help="Maximum recursive expansion rounds (default: 10).",
+    type=click.IntRange(min=0),
+    help="Maximum recursive expansion rounds; 0 means no limit (default: 10).",
 )
 @click.option(
     "--until-stale",
@@ -131,7 +136,7 @@ def _duration(value: str) -> float:
     "--provider",
     default="none",
     show_default=True,
-    help="AI provider; a dollar budget auto-detects one. Default discovery is free.",
+    help="AI provider; a dollar budget auto-detects one. No AI calls by default.",
 )
 @click.option("--model", help="Model override.")
 @click.option(
@@ -209,6 +214,9 @@ def scan_command(
 
     A hostname such as ny-01-iphone.example.com seeds a scan within example.com.
     Use --scope to restrict discovery to a narrower authorized DNS zone.
+
+    Use --max-candidates 0 --rounds 0 --time 0 to run without total-work limits.
+    Pause with Ctrl-C and continue with --resume; optional --find and budgets still apply.
 
     Only scan domains you are authorized to assess. A finding goal is best effort;
     count, time, and spending limits can stop a scan before it reaches that goal.
@@ -306,8 +314,16 @@ def scan_command(
             ai, ledger = _provider_and_ledger(
                 provider, model, budget_usd, input_price, output_price, saved, status
             )
+            candidate_limit = (
+                f"up to {options.max_candidates} candidates"
+                if options.max_candidates
+                else "no candidate limit"
+            )
+            time_limit_label = f"{options.time_limit:g}s" if options.time_limit else "no time limit"
+            round_limit = f"{options.max_rounds} rounds" if options.max_rounds else "no round limit"
             status(
-                f"Scanning {target}: up to {options.max_candidates} candidates, {options.time_limit:g}s, {options.workers} DNS workers"
+                f"Scanning {target}: {candidate_limit}, {time_limit_label}, "
+                f"{round_limit}, {options.workers} DNS workers"
             )
             if scan_input.seeds:
                 status(
@@ -447,9 +463,9 @@ def _predictor_and_ledger(
         isinstance(budget, bool)
         or not isinstance(budget, (int, float))
         or not math.isfinite(budget)
-        or not 0 <= budget <= 1000
+        or budget < 0
     ):
-        raise ValueError("Additional prediction budget must be between 0 and 1000 USD")
+        raise ValueError("Additional prediction budget must be finite and nonnegative")
     if name == "none":
         if budget is not None:
             raise ValueError("Use --predictor jev to set an additional prediction budget")

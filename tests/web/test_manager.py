@@ -264,6 +264,207 @@ def test_history_restores_without_credentials_and_resume_preserves_work(tmp_path
     assert result["summary"]["elapsed_seconds"] >= previous["summary"]["elapsed_seconds"]
 
 
+def test_history_allows_repeated_target_scans_without_archiving(tmp_path):
+    manager = make_manager(tmp_path)
+    saved_ids = set()
+    for _ in range(26):
+        scan_id = start_free(manager, options={"max_candidates": 1})
+        assert wait_complete(manager, scan_id)["status"] == "completed"
+        saved_ids.add(scan_id)
+    manager.close()
+
+    restored = make_manager(tmp_path)
+    assert {row["id"] for row in restored.list_state()["scans"]} == saved_ids
+    original_id = next(iter(saved_ids))
+    restored.resume(original_id, {"options": {"max_candidates": 2}})
+    resumed = wait_complete(restored, original_id)
+    assert resumed["status"] == "completed", resumed["error"]
+    assert resumed["summary"]["attempted"] == 2
+    new_id = start_free(restored, options={"max_candidates": 1})
+    assert wait_complete(restored, new_id)["status"] == "completed"
+    assert {row["id"] for row in restored.list_state()["scans"]} == saved_ids | {new_id}
+    restored.close()
+
+
+def test_new_scan_revalidates_saved_union_and_exports_stable_comparison(tmp_path):
+    retained = "retained.example.test"
+    old_only = "old-only.example.test"
+    lost = "lost.example.test"
+    added = "added.example.test"
+    live = {retained, lost, old_only}
+    entered, release = threading.Event(), threading.Event()
+    hold = False
+    passive_calls = []
+    dns_calls = []
+
+    class HistoricalDNS(FixtureDNS):
+        def validate(self, values, **kwargs):
+            dns_calls.extend(values)
+            if hold:
+                entered.set()
+                assert release.wait(3)
+            return [
+                DNSResult(value, value in live, ["192.0.2.20"] if value in live else [], 0)
+                for value in values
+            ]
+
+    def passive(target, **kwargs):
+        passive_calls.append(target)
+        return PassiveResult([retained, added], {"fixture": [retained, added]}, [], False)
+
+    manager = ScanManager(tmp_path, dns_factory=HistoricalDNS, passive_fetch=passive)
+    saved = {}
+    for seeds in ([retained, lost], [old_only]):
+        scan_id = manager.start(
+            {"target": "example.test", "seeds": seeds, "options": {"max_candidates": len(seeds)}}
+        )
+        assert wait_complete(manager, scan_id)["status"] == "completed"
+        saved[scan_id] = (tmp_path / f"{scan_id}.json").read_bytes()
+    manager.close()
+
+    # Prove disk history, rather than just in-process session state, is reused.
+    manager = ScanManager(tmp_path, dns_factory=HistoricalDNS, passive_fetch=passive)
+    live = {retained, old_only, added}
+    dns_calls.clear()
+    hold = True
+    scan_id = manager.start({"target": "example.test", "options": {"max_candidates": 4}})
+    try:
+        assert entered.wait(2)
+        pending = manager.snapshot(scan_id)
+        assert pending["summary"]["verified"] == 0
+        nodes = {node["value"]: node for node in pending["nodes"]}
+        for name in (retained, lost, old_only):
+            assert nodes[name]["status"] == "pending"
+            assert nodes[name]["addresses"] == []
+            assert "dns_evidence" not in nodes[name]
+            assert nodes[name]["source"] == "history"
+    finally:
+        release.set()
+    result = wait_complete(manager, scan_id)
+    assert result["status"] == "completed", result["error"]
+    assert result["options"]["passive"] is True
+    assert passive_calls == ["example.test"]
+    assert set(dns_calls) == {retained, lost, old_only, added}
+    assert set(result["summary"]["findings"]) == live
+    assert next(node for node in result["nodes"] if node["value"] == lost)["status"] == "miss"
+    comparison = {
+        "prior_verified": sorted([retained, lost, old_only]),
+        "retained": sorted([retained, old_only]),
+        "added": [added],
+        "not_reverified": [lost],
+    }
+    assert manager.report(scan_id)["comparison"] == comparison
+    assert all(
+        (tmp_path / f"{previous_id}.json").read_bytes() == original
+        for previous_id, original in saved.items()
+    )
+    manager.close()
+    restored = ScanManager(tmp_path, dns_factory=HistoricalDNS, passive_fetch=passive)
+    assert restored.report(scan_id)["comparison"] == comparison
+    assert restored.report(next(iter(saved)))["comparison"]["prior_verified"] == []
+
+
+def test_history_respects_exact_scope_depth_status_and_passive_override(tmp_path):
+    def no_passive(*args, **kwargs):
+        pytest.fail("Explicit passive=False must not collect public names")
+
+    manager = ScanManager(tmp_path, dns_factory=FixtureDNS, passive_fetch=no_passive)
+    for target, scope, seeds in (
+        ("example.test", None, ["ny-01.example.test", "ny-01.dev.example.test", "miss.example.test"]),
+        ("other.test", None, ["ny-01.other.test"]),
+        ("dev.example.test", "dev.example.test", ["ny-02.dev.example.test"]),
+    ):
+        scan_id = manager.start(
+            {
+                "target": target,
+                "scope": scope,
+                "seeds": seeds,
+                "options": {"max_depth": 2, "max_candidates": len(seeds)},
+            }
+        )
+        assert wait_complete(manager, scan_id)["status"] == "completed"
+
+    scan_id = manager.start(
+        {
+            "target": "example.test",
+            "options": {"passive": False, "max_depth": 1, "max_candidates": 1},
+        }
+    )
+    result = wait_complete(manager, scan_id)
+    assert result["status"] == "completed", result["error"]
+    assert [node["value"] for node in result["nodes"]] == ["ny-01.example.test"]
+    assert result["nodes"][0]["source"] == "history"
+    assert result["nodes"][0]["status"] == "verified"
+    assert manager.report(scan_id)["comparison"]["prior_verified"] == ["ny-01.example.test"]
+
+    narrowed = manager.start(
+        {
+            "target": "dev.example.test",
+            "scope": "dev.example.test",
+            "options": {"passive": False, "max_depth": 1, "max_candidates": 1},
+        }
+    )
+    assert wait_complete(manager, narrowed)["summary"]["findings"] == ["ny-02.dev.example.test"]
+    assert manager.report(narrowed)["comparison"]["prior_verified"] == ["ny-02.dev.example.test"]
+
+
+def test_explicit_seeds_do_not_implicitly_import_history(tmp_path):
+    def no_passive(*args, **kwargs):
+        pytest.fail("Explicit seed scans must remain seed-first")
+
+    manager = ScanManager(tmp_path, dns_factory=FixtureDNS, passive_fetch=no_passive)
+    prior_id = manager.start(
+        {
+            "target": "example.test",
+            "seeds": ["ny-01.example.test", "ny-02.example.test"],
+            "options": {"max_candidates": 2},
+        }
+    )
+    assert wait_complete(manager, prior_id)["summary"]["verified"] == 2
+    current_id = manager.start(
+        {
+            "target": "example.test",
+            "seeds": ["ny-02.example.test"],
+            "options": {"max_candidates": 1},
+        }
+    )
+    current = wait_complete(manager, current_id)
+    assert current["status"] == "completed", current["error"]
+    assert current["options"]["passive"] is False
+    assert [node["value"] for node in current["nodes"]] == ["ny-02.example.test"]
+    assert current["nodes"][0]["source"] == "seed"
+    assert manager.report(current_id)["comparison"] == {
+        "prior_verified": ["ny-01.example.test", "ny-02.example.test"],
+        "retained": ["ny-02.example.test"],
+        "added": [],
+        "not_reverified": ["ny-01.example.test"],
+    }
+
+
+def test_large_scan_limits_can_reload_and_resume_without_dashboard_ceiling(tmp_path):
+    manager = make_manager(tmp_path)
+    scan_id = start_free(
+        manager,
+        options={"max_candidates": 60000, "max_rounds": 101, "time_limit": 86401, "find": 1},
+    )
+    result = wait_complete(manager, scan_id)
+    assert result["status"] == "completed", result["error"]
+    assert result["summary"]["stop_reason"] == "verified target reached"
+    first_finding = result["summary"]["findings"][0]
+    manager.close()
+
+    restored = make_manager(tmp_path)
+    restored.resume(
+        scan_id, {"options": {"max_candidates": 0, "max_rounds": 0, "time_limit": 0, "find": 2}}
+    )
+    resumed = wait_complete(restored, scan_id)
+    assert resumed["status"] == "completed", resumed["error"]
+    assert resumed["summary"]["stop_reason"] == "verified target reached"
+    assert resumed["summary"]["verified"] == 2
+    assert first_finding in resumed["summary"]["findings"]
+    restored.close()
+
+
 def test_active_queries_live_nodes_pause_and_single_run(tmp_path):
     entered, release = threading.Event(), threading.Event()
 
@@ -336,7 +537,6 @@ def test_close_requests_pause_clears_key_and_rejects_further_work(tmp_path):
         {"target": "https://example.test"},
         {"target": "127.0.0.1"},
         {"target": "example.test", "path": "/tmp/secret"},
-        {"target": "example.test", "options": {"max_candidates": 10001}},
         {"target": "example.test", "options": {"workers": True}},
         {"target": "example.test", "options": {"unknown": 1}},
         {"target": "example.test", "provider": []},

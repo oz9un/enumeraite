@@ -111,26 +111,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
     3. Environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
     4. Default configuration
     """
-    config_dict: Dict[str, Any] = {}
-
-    # Try to load from specified file. Environment variables below augment the
-    # file, but never replace explicitly configured provider fields.
-    if config_path and os.path.exists(config_path):
-        config_dict = _read_config_file(config_path)
-
-    # Look for config in standard locations
-    standard_paths = [
-        "enumeraite.json",
-        "~/.enumeraite.json",
-        "~/.config/enumeraite/config.json",
-    ]
-
-    if not config_dict and not config_path:
-        for path in standard_paths:
-            expanded_path = os.path.expanduser(path)
-            if os.path.exists(expanded_path):
-                config_dict = _read_config_file(expanded_path)
-                break
+    # Environment variables augment the file, but never replace explicitly
+    # configured provider fields.
+    config_dict = _load_config_data(config_path)
 
     providers = config_dict.setdefault("providers", {})
     if not isinstance(providers, dict) or not all(
@@ -279,6 +262,20 @@ def load_config(config_path: Optional[str] = None) -> Config:
     return Config.from_dict(config_dict)
 
 
+def load_merklemap_api_key(config_path: Optional[str] = None) -> str:
+    """Read the passive credential without validating unrelated AI settings.
+
+    Use the same file selection and file-over-environment precedence as
+    ``load_config``. The key stays outside the serializable ``Config`` model.
+    An explicit blank file value disables the source, even if an env key exists.
+    """
+    config_dict = _load_config_data(config_path)
+    key = config_dict.get("MERKLEMAP_API_KEY", os.getenv("MERKLEMAP_API_KEY", ""))
+    if not isinstance(key, str):
+        raise ValueError("MERKLEMAP_API_KEY must be a JSON string")
+    return key.strip()
+
+
 def _merge_provider(
     providers: Dict[str, Dict[str, Any]], name: str, values: Dict[str, Any]
 ) -> None:
@@ -286,6 +283,20 @@ def _merge_provider(
     for key, value in values.items():
         if key not in current and value is not None:
             current[key] = value
+
+
+def _load_config_data(config_path: Optional[str]) -> Dict[str, Any]:
+    if config_path:
+        return _read_config_file(config_path) if os.path.exists(config_path) else {}
+    for path in (
+        "enumeraite.json",
+        "~/.enumeraite.json",
+        "~/.config/enumeraite/config.json",
+    ):
+        expanded_path = os.path.expanduser(path)
+        if os.path.exists(expanded_path):
+            return _read_config_file(expanded_path)
+    return {}
 
 
 def _read_config_file(path: str) -> Dict[str, Any]:

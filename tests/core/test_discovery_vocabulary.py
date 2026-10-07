@@ -6,7 +6,6 @@ from dataclasses import FrozenInstanceError, replace
 import pytest
 
 from enumeraite.core.discovery_vocabulary import (
-    MAX_EXCLUSIONS,
     MAX_LAYOUTS,
     MAX_RESPONSE_BYTES,
     VOCABULARY_PROTOCOL_VERSION,
@@ -313,13 +312,8 @@ def test_total_observed_and_model_choices_are_capped():
 
 @pytest.mark.parametrize(
     "excluded",
-    ["x.example.test", ["elsewhere.test"], [None], ["x.example.test"] * (MAX_EXCLUSIONS + 1)],
+    ["x.example.test", ["elsewhere.test"], [None]],
 )
-def test_bad_or_unbounded_exclusions_are_rejected(excluded):
+def test_invalid_exclusions_are_rejected(excluded):
     with pytest.raises(ValueError):
         vocabulary_exclusions(excluded, TARGET)
-
-
-def test_exclusion_limit_matches_the_fifty_thousand_node_scan_bound():
-    assert MAX_EXCLUSIONS == 50_000
-    assert vocabulary_exclusions(["x.example.test"] * MAX_EXCLUSIONS, TARGET) == ("x.example.test",)

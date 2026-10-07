@@ -12,13 +12,18 @@ from enumeraite.core import passive
 
 
 @pytest.fixture(autouse=True)
-def public_sources_are_fixtures(monkeypatch):
+def public_sources_are_fixtures(monkeypatch, tmp_path):
+    monkeypatch.delenv("MERKLEMAP_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         passive,
         "_fetch_bytes",
         lambda url, *args, **kwargs: b"[]" if "crt.sh" in url else b"No records found",
     )
+    original_which = passive.shutil.which
     monkeypatch.setattr(passive.shutil, "which", lambda name: None)
+    return original_which
 
 
 def install_executable(monkeypatch, tmp_path, code):
@@ -50,11 +55,7 @@ def test_installed_subfinder_merges_scoped_names_and_provenance(monkeypatch, tmp
     monkeypatch.setattr(
         passive,
         "_fetch_bytes",
-        lambda url, *args, **kwargs: (
-            b'[{"name_value":"a.example.test"}]'
-            if "crt.sh" in url
-            else b"mail.example.test,192.0.2.1"
-        ),
+        lambda url, *args, **kwargs: b'[{"name_value":"a.example.test\\nmail.example.test"}]',
     )
     result = passive.collect_passive("EXAMPLE.test.", timeout=1)
     assert result.names == [
@@ -70,9 +71,41 @@ def test_installed_subfinder_merges_scoped_names_and_provenance(monkeypatch, tmp
         "shop.xn--bcher-kva.example.test",
         "z.example.test",
     ]
-    assert result.sources["crt.sh"] == ["a.example.test"]
+    assert result.sources["crt.sh"] == ["a.example.test", "mail.example.test"]
     assert not result.errors and not result.truncated
     assert processes[0][0].returncode == 0
+    assert {
+        (record["source"], record["matched_name"]) for record in result.evidence["a.example.test"]
+    } == {
+        ("crt.sh", "a.example.test"),
+        ("subfinder", "A.example.test"),
+        ("subfinder", "a.example.test"),
+    }
+    record = result.evidence["dev.example.test"][0]
+    assert record["matched_name"] == "*.dev.example.test"
+    assert record["query"] == "example.test"
+    assert set(record) == {"source", "query", "matched_name", "collected_at"}
+    assert set(result.evidence) == set(result.names)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Fixture executables use POSIX shebangs")
+def test_subfinder_evidence_deduplicates_repeated_lines_and_caps_name_variants(
+    monkeypatch, tmp_path
+):
+    lines = ["api.example.test"] * 20 + [
+        "API.example.test",
+        "*.api.example.test",
+        "api.example.test.",
+    ]
+    install_executable(monkeypatch, tmp_path, f"print({chr(10).join(lines)!r})\n")
+    result = passive.collect_passive("example.test", timeout=1)
+    assert result.names == ["api.example.test"]
+    assert [record["matched_name"] for record in result.evidence["api.example.test"]] == [
+        "api.example.test",
+        "API.example.test",
+        "*.api.example.test",
+    ]
+    assert not result.errors
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Fixture executables use POSIX shebangs")
@@ -86,6 +119,7 @@ def test_arguments_environment_and_configs_are_keyless_isolated_and_removed(monk
         "MINIMAX_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
+        "MERKLEMAP_API_KEY",
         "AWS_SECRET_ACCESS_KEY",
         "HTTP_PROXY",
         "SUBFINDER_PROVIDER_CONFIG",
@@ -99,6 +133,7 @@ def test_arguments_environment_and_configs_are_keyless_isolated_and_removed(monk
     args = captured["args"]
     assert args[args.index("-d") + 1] == "example.test"
     assert "-silent" in args and "-duc" in args
+    assert args[args.index("-es") + 1] == "hackertarget"
     assert args[args.index("-max-time") + 1] == "1"
     assert 1 <= int(args[args.index("-timeout") + 1]) <= 10
     assert not any(flag in args for flag in ["-active", "-all", "-up", "-o"])
@@ -134,19 +169,119 @@ def test_relative_path_entry_still_uses_the_discovered_executable(monkeypatch, t
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Fixture executables use POSIX shebangs")
-def test_result_limit_retains_sorted_partial_names_and_kills_and_reaps(monkeypatch, tmp_path):
+@pytest.mark.parametrize("location", ["default-go", "gobin", "gopath"])
+def test_go_binary_is_discovered_with_restricted_path_and_isolated_credentials(
+    monkeypatch, tmp_path, public_sources_are_fixtures, location
+):
+    monkeypatch.setenv("PATH", "/nonexistent-fixture-path")
+    monkeypatch.delenv("GOBIN", raising=False)
+    monkeypatch.delenv("GOPATH", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-the-binary")
+    if location == "default-go":
+        directory = tmp_path / "go" / "bin"
+    elif location == "gobin":
+        directory = tmp_path / "custom-go-bin"
+        monkeypatch.setenv("GOBIN", str(directory))
+    else:
+        directory = tmp_path / "workspace" / "bin"
+        monkeypatch.setenv(
+            "GOPATH", os.pathsep.join([str(tmp_path / "empty"), str(directory.parent)])
+        )
+    directory.mkdir(parents=True)
     processes = install_executable(
         monkeypatch,
         tmp_path,
-        "import time\nprint('z.example.test\\na.example.test\\nb.example.test',flush=True)\ntime.sleep(20)\n",
+        "import os\nassert 'OPENAI_API_KEY' not in os.environ\nprint('found.example.test')\n",
+    )
+    (tmp_path / "fixture-subfinder").rename(directory / "subfinder")
+    monkeypatch.setattr(passive.shutil, "which", public_sources_are_fixtures)
+
+    result = passive.collect_passive("example.test", timeout=1)
+
+    assert result.sources["subfinder"] == ["found.example.test"]
+    assert not result.errors
+    assert processes[0][0].returncode == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Fixture executables use POSIX shebangs")
+@pytest.mark.parametrize("directory", ["/opt/homebrew/bin", "/usr/local/bin"])
+def test_homebrew_binary_is_discovered_outside_dashboard_path(monkeypatch, tmp_path, directory):
+    processes = install_executable(monkeypatch, tmp_path, "print('brew.example.test')\n")
+    monkeypatch.setenv("PATH", "/nonexistent-fixture-path")
+    monkeypatch.setattr(
+        passive.shutil,
+        "which",
+        lambda name: (
+            str(tmp_path / "fixture-subfinder") if name == f"{directory}/subfinder" else None
+        ),
+    )
+
+    result = passive.collect_passive("example.test", timeout=1)
+
+    assert result.sources["subfinder"] == ["brew.example.test"]
+    assert not result.errors
+    assert processes[0][0].returncode == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Fixture executables use POSIX shebangs")
+def test_observation_limit_samples_partial_names_and_kills_and_reaps(monkeypatch, tmp_path):
+    lines = [f"node{index:03d}.example.test" for index in range(10)]
+    lines += ["z.example.test"]
+    lines += [f"node{index:03d}.example.test" for index in range(10, 40)]
+    processes = install_executable(
+        monkeypatch,
+        tmp_path,
+        f"import time\nprint({chr(10).join(lines)!r},flush=True)\ntime.sleep(20)\n",
     )
     start = time.monotonic()
     result = passive.collect_passive("example.test", timeout=1, max_results=2)
     assert time.monotonic() - start < 0.8
-    assert result.names == ["a.example.test", "z.example.test"]
+    assert result.names == ["node000.example.test", "z.example.test"]
     assert result.sources["subfinder"] == result.names
     assert result.truncated
-    assert any("result limit" in error for error in result.errors)
+    assert any("observation limit" in error for error in result.errors)
+    assert processes[0][0].returncode is not None
+    assert processes[0][0].stdout.closed and processes[0][0].stderr.closed
+    assert set(result.evidence) == set(result.names)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Fixture executables use POSIX shebangs")
+def test_late_singleton_families_survive_numeric_heavy_output(monkeypatch, tmp_path):
+    numeric = [f"node{index:03d}.example.test" for index in range(100)]
+    singleton = ["payments.example.test", "sandbox.example.test", "z.example.test"]
+    processes = install_executable(
+        monkeypatch, tmp_path, f"print({chr(10).join(numeric + singleton)!r})\n"
+    )
+
+    result = passive.collect_passive("example.test", timeout=1, max_results=20)
+
+    assert len(result.names) == 20
+    assert set(singleton) <= set(result.names)
+    assert set(result.names) <= set(numeric + singleton)
+    assert result.names == sorted(result.names)
+    assert result.sources["subfinder"] == result.names
+    assert set(result.evidence) == set(result.names)
+    assert result.truncated
+    assert not result.errors
+    assert processes[0][0].returncode == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Fixture executables use POSIX shebangs")
+def test_observation_ceiling_bounds_work_even_with_large_result_cap(monkeypatch, tmp_path):
+    monkeypatch.setattr(passive, "_MAX_SUBFINDER_OBSERVATIONS", 4)
+    lines = [f"node{index}.example.test" for index in range(5)]
+    processes = install_executable(
+        monkeypatch,
+        tmp_path,
+        f"import time\nprint({chr(10).join(lines)!r},flush=True)\ntime.sleep(20)\n",
+    )
+    start = time.monotonic()
+    result = passive.collect_passive("example.test", timeout=1, max_results=100)
+
+    assert time.monotonic() - start < 0.8
+    assert result.names == lines[:4]
+    assert result.truncated
+    assert any("observation limit" in error for error in result.errors)
     assert processes[0][0].returncode is not None
     assert processes[0][0].stdout.closed and processes[0][0].stderr.closed
 
@@ -165,6 +300,7 @@ def test_timeout_retains_partial_names_and_reaps_before_return(monkeypatch, tmp_
     assert result.truncated
     assert any("timed out" in error for error in result.errors)
     assert processes[0][0].returncode is not None
+    assert result.evidence["known.example.test"][0]["matched_name"] == "known.example.test"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Fixture executables use POSIX shebangs")

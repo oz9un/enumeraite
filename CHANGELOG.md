@@ -2,6 +2,24 @@
 
 ### Local live dashboard (unreleased)
 
+- Follow observed in-scope CNAME targets through independent DNS checks and
+  propose literal DNS parents of verified names. Dashboard and HTML evidence
+  distinguish observed alias targets from confirmed findings.
+- Preserve usable crt.sh observations alongside malformed rows and combine both
+  certificate name fields. Sample passive intake across naming families within
+  remaining capacity; a full wildcard cache no longer prevents fresh calibration.
+- Resume newly eligible pattern expansion from older checkpoints and retry
+  admission of saved aliases after candidate-cap increases, without resetting
+  completed DNS attempts or recorded model spend.
+- Added `tools/recon_bench.py` for offline production-session replay against
+  frozen, incomplete DNS inventories, with query-order scoring, source-hash
+  gates for final tests, and explicit unknown observations.
+- Preserve detailed DNS and proposal provenance in checkpoints, reports, and the
+  dashboard. Add optional authenticated MerkleMap intake with isolated credentials
+  and bounded collection, and remove direct and subfinder HackerTarget collection.
+- Preserve open-ended DNS scans through matching CLI/dashboard controls,
+  streamed checkpoints, full exclusion history, and optional prediction
+  deadlines. Finite defaults and explicit spending/rate/scope safeguards remain.
 - Added off-by-default witnessed-layout vocabulary expansion in the dashboard
   and `--vocabulary-breadth`. It replaces eligible third AI passes, shares the
   existing budget, and keeps Python in charge of structure, scope and bounded
@@ -33,7 +51,7 @@
   explicit `--scope`. Seed-first scans verify supplied clues before expansion;
   scans without seeds collect public names automatically.
 - Added optional, bounded, keyless subfinder collection when installed, alongside
-  crt.sh and HackerTarget, with isolated configuration and no shell invocation.
+  crt.sh, with isolated configuration and no shell invocation.
 - Added `enumeraite ui`: start, pause, resume, and inspect saved scans from a
   local browser dashboard, with worker activity, discovery trees, findings,
   inferred patterns, resource counters, and downloadable reports.
@@ -47,8 +65,8 @@
 
 ## 0.2.0 — Unreleased
 
-- Added `scan TARGET` with keyless passive discovery from certificate transparency
-  and HackerTarget, common-label bootstrap, wildcard-aware DNS verification, and
+- Added `scan TARGET` with keyless passive discovery from certificate transparency,
+  common-label bootstrap, wildcard-aware DNS verification, and
   recursive expansion from verified findings.
 - Added observed-slot pattern transfers, bounded cross-combinations, numeric
   slots anywhere in a label with preserved zero padding, tentative region/product/

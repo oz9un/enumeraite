@@ -115,7 +115,6 @@ def test_jev_uses_environment_key_and_additional_budget_not_generation_budget(
         (("--predictor", "none", "--prediction-budget-usd", "0.05"), "--predictor jev"),
         (("--prediction-budget-usd", "nan"), "finite"),
         (("--prediction-budget-usd", "-1"), "not in the range"),
-        (("--prediction-budget-usd", "1001"), "not in the range"),
     ],
 )
 def test_invalid_or_unconfigured_prediction_fails_without_client(tmp_path, args, expected):
@@ -125,14 +124,16 @@ def test_invalid_or_unconfigured_prediction_fails_without_client(tmp_path, args,
     assert not FixturePredictor.instances
 
 
-def test_saved_predictor_and_budget_are_preserved_when_flags_omitted(tmp_path, monkeypatch):
+@pytest.mark.parametrize("budget", ["0.08", "1001.0"])
+def test_saved_predictor_and_budget_are_preserved_when_flags_omitted(tmp_path, monkeypatch, budget):
     monkeypatch.setenv("TYPESAFE_API_KEY", "fixture-typesafe-key-never-real")
-    assert invoke(tmp_path, "--predictor", "jev", "--prediction-budget-usd", "0.08").exit_code == 0
+    initial = invoke(tmp_path, "--predictor", "jev", "--prediction-budget-usd", budget)
+    assert initial.exit_code == 0, initial.output
     first = json.loads((tmp_path / "scan.json").read_text())
     result = invoke(tmp_path, "--resume", "--json")
     assert result.exit_code == 0, result.output
     resumed = json.loads(result.stdout)
-    assert resumed["prediction_ledger"]["limit_usd"] == "0.08"
+    assert resumed["prediction_ledger"]["limit_usd"] == budget
     assert resumed["prediction_ledger"]["spent_usd"] == first["prediction_ledger"]["spent_usd"]
     assert len(FixturePredictor.instances) == 2
     assert all(client.closed for client in FixturePredictor.instances)

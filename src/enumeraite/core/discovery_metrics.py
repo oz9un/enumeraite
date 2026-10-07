@@ -5,7 +5,17 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-_METHODS = ("seed", "passive", "bootstrap", "numeric", "pattern", "model", "other")
+_METHODS = (
+    "seed",
+    "history",
+    "passive",
+    "dns",
+    "bootstrap",
+    "numeric",
+    "pattern",
+    "model",
+    "other",
+)
 _STATUSES = ("pending", "verified", "miss", "wildcard", "inconclusive")
 _NUMERIC_REASONS = ("numeric-slot hypothesis", "Systematic numeric family enumeration")
 

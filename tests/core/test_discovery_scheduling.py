@@ -101,7 +101,9 @@ def test_resume_reproduces_parent_cursor_admission_and_allocation():
     )
     expected = miss_wave(original)
     actual = miss_wave(resumed)
-    assert actual == expected
+    assert [(node["value"], node["parent"]) for node in actual] == [
+        (node["value"], node["parent"]) for node in expected
+    ]
     assert not set(node["value"] for node in actual).intersection(
         node["value"] for node in saved["nodes"]
     )

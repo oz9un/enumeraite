@@ -1190,6 +1190,8 @@ h1 {
   padding: 13px 16px;
   font-size: 10px;
   min-height: 128px;
+  max-height: 65vh;
+  overflow: auto;
   overflow-wrap: anywhere;
 }
 .muted {
@@ -1205,7 +1207,7 @@ h1 {
 .node-details dl {
   margin: 9px 0 0;
   display: grid;
-  grid-template-columns: 53px 1fr;
+  grid-template-columns: minmax(65px, 28%) minmax(0, 1fr);
   gap: 7px 9px;
 }
 .node-details dt {
@@ -1223,6 +1225,80 @@ h1 {
   color: var(--muted);
   margin-top: 10px;
   line-height: 1.7;
+}
+.origin-section {
+  margin-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.node-section-title {
+  margin: 14px 0 8px;
+  font-size: 11px;
+  color: var(--text);
+}
+.node-section-subtitle {
+  margin: 12px 0 6px;
+  font-size: 10px;
+  color: #c9d6e7;
+}
+.origin-source {
+  margin-top: 10px;
+  padding: 0 0 10px 10px;
+  border-left: 2px solid var(--line);
+}
+.origin-link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 10px;
+  color: #c9d6e7;
+  text-decoration: underline;
+}
+.origin-cohort {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding-left: 16px;
+}
+.node-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.web-status {
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.node-detail-warning {
+  border-left: 2px solid var(--yellow);
+  padding-left: 8px;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--yellow);
+}
+.partial-dns {
+  display: block;
+  margin-top: 4px;
+  color: var(--yellow);
+  font-size: 9px;
+}
+.evidence-note,
+.graph-evidence-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+.evidence-note {
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.graph-evidence-note {
+  margin: 10px 0 0;
+}
+#findings-panel table {
+  min-width: 690px;
 }
 .results-header {
   display: flex;
@@ -1933,7 +2009,7 @@ tbody tr:hover {
     gap: 7px;
   }
   .findings-toolbar > select {
-    width: 109px;
+    width: 128px;
     font-size: 8px;
   }
   .search-box input::placeholder {

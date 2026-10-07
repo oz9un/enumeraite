@@ -105,6 +105,16 @@ def test_history_is_normalized_scoped_and_applied_before_page_limit():
     assert second[0] == expand_host(host, evidence, "example.com", count=2, max_depth=1)[1]
 
 
+def test_nested_evidence_proposes_only_scoped_untried_ancestors():
+    host = "api.blue.service.example.com"
+    first = expand_host(host, [host], "example.com", count=1)
+    assert names(first) == ["blue.service.example.com"]
+    second = expand_host(host, [host], "example.com", count=1, exclude={"blue.service.example.com"})
+    assert names(second) == ["service.example.com"]
+    assert first[0].parent == second[0].parent == host
+    assert "example.com" not in names(expand_host(host, [host], "example.com", count=100))
+
+
 def test_history_paging_reaches_beyond_initial_bounded_numeric_traversal():
     host = "node-001.example.com"
     history = {f"node-{number:03d}.example.com" for number in range(1, 350)}
@@ -192,7 +202,7 @@ def test_nested_labels_are_mutated_and_deeper_children_learn_from_peers():
     assert all(value.count(".") - 1 <= 3 for value in values)
     assert "api.api.ny-01-iphone.example.com" not in values
     depth_limited = expand_host(host, evidence, "example.com", count=40, max_depth=2)
-    assert all(proposal.value.count(".") == 3 for proposal in depth_limited)
+    assert all(proposal.value.count(".") - 1 <= 2 for proposal in depth_limited)
     assert expand_host(host, evidence, "example.com", max_depth=1) == []
 
 

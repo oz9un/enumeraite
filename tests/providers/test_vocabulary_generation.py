@@ -434,16 +434,22 @@ def test_count_cap_and_runtime_exclusions_do_not_trigger_refill(monkeypatch, lay
     bounded.chat.completions.create.assert_called_once()
 
 
-def test_combined_exclusions_are_bounded_before_a_paid_request(monkeypatch, layout):
-    provider, base, bounded = make_provider(monkeypatch, additions(layout, "stage"))
-    provider.set_runtime_exclusions([f"prior{index}.example.test" for index in range(25_000)])
-    excluded = [f"pending{index}.example.test" for index in range(25_001)]
-    with pytest.raises(ValueError, match="50,000"):
-        generate(provider, layout, exclusions=excluded)
+def test_large_history_filters_old_proposals_without_expanding_paid_prompt(monkeypatch, layout):
+    provider, base, bounded = make_provider(
+        monkeypatch, additions(layout, "stage", "qa", "sandbox")
+    )
+    provider.set_runtime_exclusions(
+        ["api.stage.example.test", *[f"prior{index}.example.test" for index in range(25_000)]]
+    )
+    excluded = ["api.qa.example.test", *[f"pending{index}.example.test" for index in range(25_001)]]
+    result = generate(provider, layout, exclusions=excluded)
+    assert result.paths == ["api.sandbox.example.test"]
+    assert result.metadata["rejections"]["known_or_excluded"] == 2
+    wire = bounded.chat.completions.create.call_args.kwargs
+    prompt = json.loads(wire["messages"][1]["content"])
+    assert len(prompt["already_attempted_not_evidence"]) <= 200
     base.chat.completions.create.assert_not_called()
-    bounded.chat.completions.create.assert_not_called()
-    assert provider._runtime_single_request is False
-    assert provider._runtime_generation_kind is None
+    bounded.chat.completions.create.assert_called_once()
 
 
 @pytest.mark.parametrize(

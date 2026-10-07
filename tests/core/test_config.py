@@ -7,7 +7,14 @@ import tempfile
 import pytest
 from pydantic import ValidationError
 
-from enumeraite.core.config import Config, load_config
+from enumeraite.core.config import Config, load_config, load_merklemap_api_key
+
+
+@pytest.fixture(autouse=True)
+def isolated_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MERKLEMAP_API_KEY", raising=False)
 
 
 def test_config_creation():
@@ -232,3 +239,39 @@ def test_provider_timeout_environment_must_be_finite_and_positive(monkeypatch, v
     monkeypatch.setenv("ENUMERAITE_PROVIDER_TIMEOUT", value)
     with pytest.raises(ValueError, match="must be positive"):
         load_config("/this/path/does/not/exist.json")
+
+
+def test_merklemap_file_precedence_and_explicit_disable(tmp_path, monkeypatch):
+    monkeypatch.setenv("MERKLEMAP_API_KEY", "fixture-env-key")
+    path = tmp_path / ".config" / "enumeraite" / "config.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"MERKLEMAP_API_KEY": "fixture-file-key"}), encoding="utf-8")
+    assert load_merklemap_api_key() == "fixture-file-key"
+
+    project = tmp_path / "enumeraite.json"
+    project.write_text(json.dumps({"MERKLEMAP_API_KEY": " \t"}), encoding="utf-8")
+    assert load_merklemap_api_key() == ""
+
+    # The selected file wins as a whole; do not merge keys from a lower-priority file.
+    project.write_text("{}", encoding="utf-8")
+    assert load_merklemap_api_key() == "fixture-env-key"
+    assert load_merklemap_api_key(str(path)) == "fixture-file-key"
+
+
+def test_merklemap_file_key_is_not_serialized_as_application_config(tmp_path):
+    path = tmp_path / "enumeraite.json"
+    path.write_text(json.dumps({"MERKLEMAP_API_KEY": "fixture-private-key"}), encoding="utf-8")
+    config = load_config()
+    assert load_merklemap_api_key() == "fixture-private-key"
+    assert "fixture-private-key" not in config.model_dump_json()
+    assert "fixture-private-key" not in repr(config)
+
+
+def test_merklemap_malformed_key_does_not_echo_credentials(tmp_path):
+    path = tmp_path / "enumeraite.json"
+    path.write_text(
+        json.dumps({"MERKLEMAP_API_KEY": {"key": "fixture-private-key"}}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError) as error:
+        load_merklemap_api_key()
+    assert "fixture-private-key" not in str(error.value)

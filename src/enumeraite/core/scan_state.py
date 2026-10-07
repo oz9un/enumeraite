@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from .bounded_io import read_bounded_regular_file
+from .bounded_io import open_regular_file
 
 
 def default_state_path(target: str, resume: bool = False) -> Path:
@@ -35,11 +35,11 @@ class ScanStore:
     def load(self) -> dict:
         if self.path.is_symlink():
             raise ValueError("Scan state must not be a symbolic link")
-        raw = read_bounded_regular_file(self.path, 32_000_000, no_follow=True)
-        try:
-            state = json.loads(raw)
-        except (ValueError, RecursionError) as exc:
-            raise ValueError("Invalid scan checkpoint JSON") from exc
+        with open_regular_file(self.path, no_follow=True) as handle:
+            try:
+                state = json.load(handle, parse_constant=_invalid_json_constant)
+            except (ValueError, RecursionError) as exc:
+                raise ValueError("Invalid scan checkpoint JSON") from exc
         if not isinstance(state, dict):
             raise ValueError("Scan checkpoint must be a JSON object")
         return state
@@ -48,13 +48,11 @@ class ScanStore:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.path.is_symlink():
             raise ValueError("Scan state must not be a symbolic link")
-        serialized = json.dumps(state, ensure_ascii=True, allow_nan=False, indent=2)
-        if len(serialized.encode("utf-8")) + 1 > 32_000_000:
-            raise ValueError("Scan checkpoint exceeds the 32 MB state limit")
         descriptor, name = tempfile.mkstemp(prefix=".scan-", dir=self.path.parent)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(serialized + "\n")
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(state, handle, ensure_ascii=True, allow_nan=False, indent=2)
+                handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(name, self.path)
@@ -69,7 +67,7 @@ class ScanStore:
         lock_path = self.path.with_suffix(".lock")
         if lock_path.is_symlink():
             raise ValueError("Scan lock must not be a symbolic link")
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         descriptor = os.open(lock_path, flags, 0o600)
         with os.fdopen(descriptor, "r+b") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
@@ -92,3 +90,7 @@ class ScanStore:
             if self.path.exists() and not resume:
                 raise ValueError("State file already exists; use --resume or another --state path")
             yield
+
+
+def _invalid_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {value}")

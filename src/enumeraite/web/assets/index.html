@@ -64,7 +64,7 @@
             ></textarea>
             <p class="field-note" id="seeds-note">
               Use these as initial clues alongside your domain. Only
-              DNS-verified hosts guide new candidates.
+              DNS-resolved hosts guide new candidates.
             </p>
           </details>
           <section
@@ -85,6 +85,22 @@
               you’re authorized to scan.
             </p>
           </section>
+          <div id="open-ended-option" hidden>
+            <label class="checkbox-label" for="run-until-paused">
+              <input
+                id="run-until-paused"
+                type="checkbox"
+                aria-describedby="open-ended-note"
+              />
+              Run until paused <span>optional</span>
+            </label>
+            <p class="field-note" id="open-ended-note">
+              Removes candidate, time, round, and stale-round limits. A finding
+              goal or no remaining work can still finish the scan. AI and
+              prediction budgets still apply. Memory and disk usage grow as
+              discovery continues. With this off, 0 removes an individual work limit.
+            </p>
+          </div>
           <div class="field-row">
             <div>
               <label for="goal">Finding goal <span>optional</span></label
@@ -117,7 +133,7 @@
             <option value="anthropic">Anthropic · hosted AI discovery</option>
           </select>
           <p class="field-note" id="mode-note">
-            Start from public evidence or your own hostnames. Verified
+            Start from public evidence or your own hostnames. DNS-resolved
             discoveries guide the next round. No generation API key or
             generation charges; optional plan ranking is billed separately.
           </p>
@@ -176,7 +192,7 @@
             </div>
             <p class="field-note">
               The dashboard is local; AI runs through the selected provider’s
-              API. Target names, verified hosts, and scan feedback are sent for
+              API. Target names, DNS-resolved hosts, and scan feedback are sent for
               candidate generation. No local model required.
             </p>
             <p class="field-note">
@@ -249,7 +265,7 @@
                 </p>
               </div>
               <p class="field-note">
-                Enabling Jev sends bounded target context, verified hostnames,
+                Enabling Jev sends bounded target context, DNS-resolved hostnames,
                 proposed plans, and DNS outcomes to TypeSafe for ranking. It
                 uses a hosted API, not a local model.
               </p>
@@ -289,8 +305,10 @@
             </select>
             <p class="field-note">
               Automatic mode skips public sources when you provide a starting
-              hostname. Otherwise it checks crt.sh, HackerTarget, and subfinder
-              if installed.
+              hostname. Otherwise it checks crt.sh, subfinder if installed, and
+              MerkleMap when MERKLEMAP_API_KEY is configured in JSON or the
+              server environment. HackerTarget is excluded, including through subfinder.
+              MerkleMap uses your API quota separately from AI spending limits.
             </p>
             <div class="field-row">
               <div>
@@ -357,7 +375,7 @@
               </label>
               <p class="field-note">
                 With hosted AI enabled, use some existing AI passes to suggest
-                related words for patterns supported by verified names. Python
+                related words for patterns supported by DNS-resolved names. Python
                 builds bounded combinations; DNS checks them. Uses the same AI
                 budget, and may not help every target.
               </p>
@@ -447,7 +465,7 @@
         <section class="metrics" aria-label="Scan statistics">
           <div class="metric metric-featured">
             <div class="metric-label">
-              VERIFIED HOSTS <span class="live-spark" aria-hidden="true"></span>
+              DNS RESOLVED <span class="live-spark" aria-hidden="true"></span>
             </div>
             <div class="metric-value" id="metric-verified">0</div>
             <div class="metric-caption">
@@ -528,7 +546,7 @@
             </div>
             <div class="graph-toolbar">
               <label class="toggle-label"
-                ><input type="checkbox" id="graph-verified" /> Verified
+                ><input type="checkbox" id="graph-verified" /> DNS resolved
                 only</label
               >
               <div class="zoom-controls">
@@ -550,7 +568,7 @@
                 id="discovery-graph"
                 xmlns="http://www.w3.org/2000/svg"
                 role="group"
-                aria-label="Discovery tree. Select a node for details. Use the findings list below as a text alternative."
+                aria-label="DNS discovery tree. Website availability is not checked. Select a node for DNS evidence. Use the findings list below as a text alternative."
               >
                 <g id="graph-layer"></g>
               </svg>
@@ -565,7 +583,7 @@
                 </div>
                 <h3>A domain. A thousand possibilities.</h3>
                 <p>
-                  Your discovery map will grow here.<br />Verified hosts become
+                  Your discovery map will grow here.<br />DNS-resolved hosts become
                   clues for the next search.
                 </p>
                 <span class="empty-badge">AWAITING FIRST SIGNAL</span>
@@ -576,14 +594,15 @@
             </div>
             <div class="graph-footer">
               <div class="legend">
-                <span><i class="legend-dot verified"></i>Verified</span
-                ><span><i class="legend-dot active"></i>Checking</span
-                ><span><i class="legend-dot pending"></i>Queued</span
-                ><span><i class="legend-dot miss"></i>Not found</span
+                <span><i class="legend-dot verified"></i>DNS resolved</span
+                ><span><i class="legend-dot active"></i>Checking DNS</span
+                ><span><i class="legend-dot pending"></i>DNS queued</span
+                ><span><i class="legend-dot miss"></i>No DNS address</span
                 ><span
-                  ><i class="legend-dot wildcard"></i>Wildcard / uncertain</span
+                  ><i class="legend-dot wildcard"></i>Wildcard / DNS inconclusive</span
                 >
               </div>
+              <p class="graph-evidence-note">DNS resolution does not prove a working website. Saved observations are not live monitoring.</p>
               <p id="graph-limit" hidden></p>
             </div>
           </section>
@@ -619,7 +638,7 @@
                 <h2 id="node-title">Under the lens</h2>
                 <span class="panel-tag">NODE DETAILS</span>
               </div>
-              <div id="node-details" class="node-details">
+              <div id="node-details" class="node-details" tabindex="0" role="region" aria-label="Selected hostname details">
                 <p class="muted">
                   Select a node on the map or a hostname in the findings list to
                   see its origin, pattern, and DNS evidence.
@@ -704,30 +723,32 @@
                 />
               </div>
               <label class="sr-only" for="findings-filter"
-                >Filter by status</label
+                >Filter by DNS status</label
               ><select id="findings-filter">
-                <option value="verified">Verified hosts</option>
+                <option value="verified">DNS resolved</option>
                 <option value="all">All candidates</option>
-                <option value="pending">Queued</option>
-                <option value="miss">Not found</option>
-                <option value="inconclusive">Inconclusive</option>
-                <option value="wildcard">Wildcard</option>
+                <option value="pending">DNS queued</option>
+                <option value="miss">No DNS address</option>
+                <option value="inconclusive">DNS inconclusive</option>
+                <option value="wildcard">Wildcard filtered</option>
               </select>
             </div>
+            <p id="findings-evidence-note" class="evidence-note">DNS results describe the recorded lookup, not website availability. Web not checked: no HTTP or HTTPS requests are made. Select a hostname for details.</p>
             <div class="table-scroll">
-              <table>
+              <table aria-label="Candidate DNS observations" aria-describedby="findings-evidence-note">
                 <thead>
                   <tr>
-                    <th>Hostname</th>
-                    <th>Status</th>
-                    <th>Origin</th>
-                    <th>DNS evidence</th>
+                    <th scope="col">Hostname</th>
+                    <th scope="col">DNS status</th>
+                    <th scope="col">Web</th>
+                    <th scope="col">Origin</th>
+                    <th scope="col">Saved IP addresses</th>
                   </tr>
                 </thead>
                 <tbody id="findings-body"></tbody>
               </table>
               <div id="findings-empty" class="table-empty">
-                Verified discoveries will appear here as the scan progresses.
+                DNS-resolved names will appear here as the scan progresses.
               </div>
             </div>
             <div class="table-pagination">
@@ -763,8 +784,8 @@
                 <table aria-label="Discovery results by method">
                   <thead><tr>
                     <th scope="col">Method</th><th scope="col">Queued</th>
-                    <th scope="col">Checked</th><th scope="col">Verified</th>
-                    <th scope="col">Misses</th><th scope="col">Unresolved</th>
+                    <th scope="col">Checked</th><th scope="col">DNS resolved</th>
+                    <th scope="col">No address</th><th scope="col">Inconclusive</th>
                     <th scope="col">Wildcard</th>
                   </tr></thead>
                   <tbody id="discovery-method-rows"></tbody>
@@ -776,7 +797,7 @@
             </details>
             <div id="patterns-list" class="patterns-list">
               <div class="table-empty">
-                Patterns will emerge from verified hosts.
+                Patterns will emerge from DNS-resolved hosts.
               </div>
             </div>
           </div>
@@ -862,6 +883,22 @@
           Completed checks are not repeated.
         </p>
         <div id="resume-evidence" class="resume-evidence"></div>
+        <div id="resume-open-ended-option" hidden>
+          <label class="checkbox-label" for="resume-run-until-paused">
+            <input
+              id="resume-run-until-paused"
+              type="checkbox"
+              aria-describedby="resume-open-ended-note"
+            />
+            Run until paused <span>optional</span>
+          </label>
+          <p class="field-note" id="resume-open-ended-note">
+            Removes candidate, time, round, and stale-round limits. A finding
+            goal or no remaining work can still finish the scan. Cumulative AI
+            and prediction budgets still apply. Memory and disk usage grow as
+            discovery continues. With this off, 0 removes an individual work limit.
+          </p>
+        </div>
         <div class="field-row">
           <div>
             <label for="resume-candidates"

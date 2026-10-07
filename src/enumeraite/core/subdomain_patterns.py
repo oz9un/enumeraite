@@ -194,6 +194,18 @@ def expand_host(
         if len(result) >= count:
             return result
 
+    # A verified child exposes its literal ancestors, but does not prove they
+    # resolve. Keep these scoped names ahead of speculative token mutations.
+    for index, piece in enumerate(current.pieces):
+        if piece == ".":
+            accept(
+                current.pieces[index + 1 :],
+                "DNS ancestor of a verified name; existence is not assumed",
+                0.70,
+            )
+            if len(result) >= count:
+                return result
+
     # Allow traversal past earlier pages without making history positive
     # evidence. Keep the existing maximum work ceilings even for a large scan.
     work_count = min(5_000, count + len(context.excluded))

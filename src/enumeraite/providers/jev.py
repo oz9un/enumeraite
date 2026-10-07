@@ -35,9 +35,11 @@ class JevPredictionError(RuntimeError):
     """A deliberately generic failure with no remote body or credential text."""
 
 
-def _active(deadline: float, stop_requested: Callable[[], bool]) -> float:
+def _active(deadline: float | None, stop_requested: Callable[[], bool]) -> float | None:
     if stop_requested():
         raise ScanPaused("Scan paused before Jev scoring completed")
+    if deadline is None:
+        return None
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("Jev scoring reached the scan time limit")
@@ -133,7 +135,7 @@ class JevPredictor:
         plans: list[dict],
         *,
         ledger: SpendLedger,
-        deadline: float,
+        deadline: float | None,
         checkpoint: Callable[[], None],
         stop_requested: Callable[[], bool],
     ) -> dict[str, float]:
@@ -141,8 +143,10 @@ class JevPredictor:
             raise JevPredictionError("Jev predictor is closed")
         if self.model != JEV_MODEL:
             raise ValueError("Jev scoring requires the supported pinned model")
-        if type(deadline) not in {int, float} or not math.isfinite(deadline):
-            raise ValueError("Jev scoring requires a finite scan deadline")
+        if deadline is not None and (
+            type(deadline) not in {int, float} or not math.isfinite(deadline)
+        ):
+            raise ValueError("Jev scoring requires a finite scan deadline or None")
         if not callable(checkpoint) or not callable(stop_requested):
             raise ValueError("Jev scoring requires checkpoint and pause callbacks")
         if not isinstance(ledger, SpendLedger) or (
@@ -182,7 +186,10 @@ class JevPredictor:
                 with self._session.post(
                     _ENDPOINT,
                     data=payload,
-                    timeout=(min(3.0, remaining), min(5.0, remaining)),
+                    timeout=(
+                        min(3.0, remaining) if remaining is not None else 3.0,
+                        min(5.0, remaining) if remaining is not None else 5.0,
+                    ),
                     allow_redirects=False,
                     stream=True,
                 ) as response:
@@ -254,7 +261,7 @@ class JevPredictor:
         return _json_bytes(payload, _MAX_REQUEST_BYTES), list(questions)
 
     @staticmethod
-    def _read(response: Any, deadline: float, stop_requested: Callable[[], bool]) -> bytes:
+    def _read(response: Any, deadline: float | None, stop_requested: Callable[[], bool]) -> bytes:
         if response.headers.get("Content-Encoding", "identity").lower() not in {"", "identity"}:
             raise JevPredictionError("Jev response encoding is unsupported")
         length = response.headers.get("Content-Length")

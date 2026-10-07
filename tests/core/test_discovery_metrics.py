@@ -11,6 +11,7 @@ def node(source, status="pending", attempts=0, reason=""):
 def test_counts_separate_origins_numeric_rules_and_dns_outcomes():
     nodes = [
         node("seed", "verified", 1),
+        node("history", "verified", 1),
         node("passive", "miss", 1),
         node("bootstrap", "wildcard", 1),
         node("pattern", "verified", 2, "numeric-slot hypothesis: neighbors"),
@@ -23,9 +24,9 @@ def test_counts_separate_origins_numeric_rules_and_dns_outcomes():
     result = discovery_method_counts(nodes)
     assert nodes == original
     rows = {row["method"]: row for row in result}
-    assert list(rows) == ["seed", "passive", "bootstrap", "numeric", "pattern", "model", "other"]
+    assert list(rows) == ["seed", "history", "passive", "bootstrap", "numeric", "pattern", "model", "other"]
     assert sum(row["candidates"] for row in result) == len(nodes)
-    assert sum(row["checked"] for row in result) == 6
+    assert sum(row["checked"] for row in result) == 7
     assert rows["numeric"]["checked"] == 2  # A retry is not another candidate.
     assert rows["numeric"]["verified"] == rows["numeric"]["miss"] == 1
     assert rows["pattern"]["inconclusive"] == 1
@@ -33,6 +34,8 @@ def test_counts_separate_origins_numeric_rules_and_dns_outcomes():
     assert rows["model"]["pending"] == 1
     assert rows["bootstrap"]["wildcard"] == 1
     assert rows["bootstrap"]["verified"] == 0
+    assert rows["history"]["verified"] == rows["history"]["checked"] == 1
+    assert rows["other"]["verified"] == 0
 
 
 def test_requeued_transient_error_is_checked_and_pending_but_not_a_miss():

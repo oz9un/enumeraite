@@ -1,5 +1,6 @@
 """Real HTTP → manager → discovery-session integration, with offline providers."""
 
+import copy
 import http.client
 import json
 import threading
@@ -75,6 +76,76 @@ def running_dashboard(storage_dir, **injected):
 def passive_fixture(target, **kwargs):
     names = [f"ny-01-iphone.{target}"]
     return PassiveResult(names, {"fixture-certificate-log": names}, [])
+
+
+def test_http_dns_evidence_survives_export_and_reload_without_rechecking(tmp_path):
+    calls = []
+    test_key = "fixture-evidence-secret-for-tests"
+    evidence = {
+        "checked_at": "2026-10-03T12:00:00+00:00",
+        "duration_ms": 17.5,
+        "records": {
+            "A": {"status": "answered", "addresses": ["192.0.2.10"], "error": ""},
+            "AAAA": {"status": "error", "addresses": [], "error": f"timeout: {test_key}"},
+        },
+        "wildcard": {"status": "not_detected", "parent": "example.com"},
+    }
+
+    class EvidenceDNS:
+        def __init__(self, target, **kwargs):
+            pass
+
+        def validate(self, values, **kwargs):
+            calls.extend(values)
+            return [
+                ScanDNSResult(
+                    value, True, ["192.0.2.10"], 0.0175, dns_evidence=copy.deepcopy(evidence)
+                )
+                for value in values
+            ]
+
+    def forbidden_passive(*args, **kwargs):
+        pytest.fail("An explicit seed must not trigger passive collection")
+
+    with running_dashboard(
+        tmp_path, dns_factory=EvidenceDNS, passive_fetch=forbidden_passive
+    ) as api:
+        api.json(
+            "/api/credentials", method="POST", payload={"provider": "minimax", "api_key": test_key}
+        )
+        scan_id = api.json(
+            "/api/scans",
+            method="POST",
+            expected=201,
+            payload={"target": "api.example.com", "options": {"find": 1}},
+        )["id"]
+        snapshot = api.wait_finished(scan_id)
+        assert snapshot["status"] == "completed", snapshot["error"]
+        assert calls == ["api.example.com"]
+        node = snapshot["nodes"][0]
+        assert node["status"] == "verified"
+        assert node["dns_evidence"]["records"]["AAAA"]["status"] == "error"
+        assert node["dns_evidence"]["records"]["AAAA"]["error"] == "timeout: [REDACTED]"
+        assert "web" not in node  # DNS success does not manufacture a web result.
+        report = api.json(f"/api/scans/{scan_id}/export?format=json")
+        assert report["nodes"][0]["dns_evidence"] == node["dns_evidence"]
+        status, _, page = api.request(f"/api/scans/{scan_id}/export?format=html")
+        assert status == 200
+        assert b"DNS resolved" in page
+        assert b"Not checked" in page
+        assert b"2026-10-03T12:00:00+00:00" in page
+        assert all(test_key.encode() not in response for response in api.responses)
+
+    saved = json.loads((tmp_path / f"{scan_id}.json").read_text())
+    validate_checkpoint(saved, "example.com")
+    assert saved["nodes"][0]["dns_evidence"] == node["dns_evidence"]
+    assert test_key not in json.dumps(saved)
+    with running_dashboard(
+        tmp_path, dns_factory=EvidenceDNS, passive_fetch=forbidden_passive
+    ) as api:
+        restored = api.json(f"/api/scans/{scan_id}")
+        assert restored["nodes"][0]["dns_evidence"] == node["dns_evidence"]
+        assert calls == ["api.example.com"]
 
 
 def test_http_scan_collects_known_names_recurses_and_exports_real_tree(tmp_path):
@@ -301,6 +372,13 @@ def test_http_hosted_key_stays_private_and_model_evidence_reaches_snapshot(
         assert node["source"] == "model" and node["status"] == "verified"
         assert rationale in node["reason"]
         assert credential not in node["reason"]
+        origin = node["origin_evidence"]
+        assert origin["evidence"] == [known]
+        assert origin["model"] == received[0]["model"]
+        assert origin["provider"] == (
+            "anthropic" if provider_name == "anthropic" else f"openai-compat:{provider_name}"
+        )
+        assert origin["batch"] == 1
         assert float(snapshot["summary"]["ledger"]["spent_usd"]) > 0
         assert snapshot["summary"]["ledger"]["calls"] == 3
         state = api.json("/api/state")

@@ -54,7 +54,6 @@ IDENTITIES = {
     "openai": "openai-compat:openai",
     "anthropic": "anthropic",
 }
-MAX_HISTORY = 25
 MAX_EVENTS = 300
 STATE_FIELDS = {
     "version",
@@ -99,6 +98,8 @@ SCHEMA_FIELDS = (
         "_ui",
         "created_at",
         "status",
+        "prior_verified",
+        "history_enabled",
         "value",
         "parent",
         "source",
@@ -107,6 +108,33 @@ SCHEMA_FIELDS = (
         "depth",
         "expanded_revision",
         "addresses",
+        "aliases",
+        "dns_evidence",
+        "origin_evidence",
+        "queued_at",
+        "collected_at",
+        "query",
+        "matched_name",
+        "certificate_id",
+        "issuer",
+        "subject_common_name",
+        "first_seen",
+        "not_before",
+        "not_after",
+        "entry_timestamp",
+        "address",
+        "evidence",
+        "confidence",
+        "focus",
+        "batch",
+        "plan_description",
+        "layout",
+        "word",
+        "numeric_ceiling",
+        "duration_ms",
+        "records",
+        "A",
+        "AAAA",
         "error",
         "attempts",
         "name",
@@ -181,6 +209,8 @@ class _Record:
     snapshot_at: float = field(default_factory=time.monotonic)
     elapsed: float = 0
     predictor: dict[str, str] | None = None
+    prior_verified: tuple[str, ...] = ()
+    history_enabled: bool = False
 
 
 class ScanManager:
@@ -238,7 +268,7 @@ class ScanManager:
             records = sorted(self._records.values(), key=lambda row: row.created_at, reverse=True)
             return {
                 "credentials": {provider: bool(key) for provider, key in self._api_keys.items()},
-                "features": {"vocabulary_breadth": True},
+                "features": {"vocabulary_breadth": True, "open_ended_scans": True},
                 "scans": [self._snapshot(row, compact=True) for row in records],
             }
 
@@ -270,14 +300,25 @@ class ScanManager:
             validate_seed_depth(target, seeds, options.max_depth)
             provider_name, model, ledger = self._provider_settings(payload)
             predictor, prediction_ledger = self._prediction_settings(payload)
-            # A bounded history never silently deletes the user's saved scans.
-            if len(self._records) >= MAX_HISTORY:
-                raise RuntimeError(
-                    "The dashboard history is full (25 scans); archive saved scans outside the dashboard first"
-                )
             scan_id = uuid.uuid4().hex
             row = _Record(scan_id, target, asdict(options), provider_name, model, time.time())
             row.predictor = predictor
+            # Resolve the user's passive/seed choices before consulting history.
+            # Explicit seeds remain a focused workflow, not an implicit union.
+            row.prior_verified = tuple(
+                sorted(
+                    {
+                        name
+                        for previous in self._records.values()
+                        if previous.target == target
+                        for name, node in previous.nodes.items()
+                        if node.get("status") == "verified"
+                        and name.endswith("." + target)
+                        and len(name[: -(len(target) + 1)].split(".")) <= options.max_depth
+                    }
+                )
+            )
+            row.history_enabled = not seeds
             self._records[scan_id] = row
             self._launch(
                 row, options, ledger, seeds, prediction_ledger=prediction_ledger, resume=False
@@ -349,6 +390,8 @@ class ScanManager:
         with self._lock:
             row = self._record(scan_id)
             snapshot = self._snapshot(row)
+            prior = set(row.prior_verified)
+            current = set(snapshot["summary"]["findings"])
             return {
                 **snapshot["summary"],
                 "id": row.id,
@@ -359,6 +402,14 @@ class ScanManager:
                 "options": copy.deepcopy(row.options),
                 "provider": row.provider,
                 "model": row.model,
+                "comparison": {
+                    "prior_verified": list(row.prior_verified),
+                    "retained": sorted(prior & current),
+                    "added": sorted(current - prior),
+                    # Includes pending, budget-limited and inconclusive names:
+                    # lack of current verification does not establish absence.
+                    "not_reverified": sorted(prior - current),
+                },
             }
 
     def close(self) -> None:
@@ -396,10 +447,7 @@ class ScanManager:
             name not in ScanOptions.__dataclass_fields__ for name in raw
         ):
             raise ValueError("Scan options contain unsupported fields")
-        options = ScanOptions(**{**(previous or {}), **raw})
-        if options.max_candidates > 10000:
-            raise ValueError("Dashboard scans are limited to 10000 candidates")
-        return options
+        return ScanOptions(**{**(previous or {}), **raw})
 
     @staticmethod
     def _seeds(raw: Any, target: str) -> list[str]:
@@ -454,9 +502,9 @@ class ScanManager:
             isinstance(budget, bool)
             or not isinstance(budget, (int, float))
             or not math.isfinite(budget)
-            or not 0 <= budget <= 1000
+            or budget < 0
         ):
-            raise ValueError("AI budget must be a finite number between 0 and 1000 USD")
+            raise ValueError("AI budget must be a finite nonnegative number in USD")
         if provider == "none":
             if budget is not None:
                 raise ValueError("A dollar budget is only needed for hosted AI scans")
@@ -495,9 +543,11 @@ class ScanManager:
             isinstance(budget, bool)
             or not isinstance(budget, (int, float))
             or not math.isfinite(budget)
-            or not 0 <= budget <= 1000
+            or budget < 0
         ):
-            raise ValueError("The additional prediction budget must be between 0 and 1000 USD")
+            raise ValueError(
+                "The additional prediction budget must be a finite nonnegative number in USD"
+            )
         if name == "none":
             if budget is not None:
                 raise ValueError("Select Jev to set an additional prediction budget")
@@ -570,8 +620,6 @@ class ScanManager:
                 if resume:
                     latest = store.load()
                     validate_checkpoint(latest, row.target)
-                    if latest["options"]["max_candidates"] > 10000 or len(latest["nodes"]) > 10000:
-                        raise ValueError("Saved scan exceeds dashboard limits")
                     latest = _state_projection(latest)
                     expected = _state_projection(saved_state) if saved_state else None
                     if latest != expected:
@@ -633,7 +681,10 @@ class ScanManager:
                 )
                 # Establish a resumable checkpoint even if paused during passive work.
                 session.save()
-                session.run(seeds)
+                if row.history_enabled and row.prior_verified:
+                    session.run(seeds, prior_names=row.prior_verified)
+                else:
+                    session.run(seeds)
                 final_status = "paused" if row.cancel.is_set() else "completed"
                 self._checkpoint(row, store, session.state, run_keys, final_status=final_status)
                 with self._lock:
@@ -731,7 +782,15 @@ class ScanManager:
             key,
         )
         with self._lock:
-            clean["_ui"] = {"created_at": row.created_at, "status": final_status or row.status}
+            clean["_ui"] = self._redact(
+                {
+                    "created_at": row.created_at,
+                    "status": final_status or row.status,
+                    "prior_verified": list(row.prior_verified),
+                    "history_enabled": row.history_enabled,
+                },
+                key,
+            )
         store.save(clean)
         nodes = {node["value"]: node for node in clean["nodes"]}
         with self._lock:
@@ -782,9 +841,7 @@ class ScanManager:
                 return
             if kind in {"candidate", "result", "finding"} and isinstance(data.get("value"), str):
                 value = data["value"]
-                if (
-                    value.endswith("." + row.target) and len(row.nodes) < 10000
-                ) or value in row.nodes:
+                if value.endswith("." + row.target) or value in row.nodes:
                     row.nodes[value] = {**row.nodes.get(value, {}), **data}
             if kind == "phase" and row.status != "pausing":
                 row.phase = str(data.get("message", "Working"))[:1000]
@@ -810,7 +867,8 @@ class ScanManager:
             "findings": findings,
             "verified": len(findings),
             "known_verified": sum(
-                node.get("status") == "verified" and node.get("source") in {"seed", "passive"}
+                node.get("status") == "verified"
+                and node.get("source") in {"seed", "passive", "history"}
                 for node in nodes
             ),
             "attempted": sum(node.get("attempts", 0) > 0 for node in nodes),
@@ -860,25 +918,17 @@ class ScanManager:
     def _load_history(self) -> None:
         if not self.storage_dir.exists():
             return
-        entries = []
-        # Only locally generated UUID names are considered. Never follow a
-        # supplied path, a checkpoint symlink, or an unbounded directory history.
-        for index, path in enumerate(self.storage_dir.iterdir()):
-            if index >= 1000:
-                break
-            if path.suffix == ".json" and SCAN_ID.fullmatch(path.stem) and not path.is_symlink():
-                entries.append(path)
-            if len(entries) >= MAX_HISTORY:
-                break
-        for path in entries:
+        # Load every saved session without deleting history or following supplied
+        # paths and symlinks. ScanStore also rejects non-regular files.
+        for path in self.storage_dir.iterdir():
+            if path.suffix != ".json" or not SCAN_ID.fullmatch(path.stem) or path.is_symlink():
+                continue
             try:
                 state = ScanStore(path).load()
                 if not isinstance(state.get("target"), str):
                     continue
                 target = normalize_target(state["target"])
                 validate_checkpoint(state, target)
-                if state["options"]["max_candidates"] > 10000 or len(state["nodes"]) > 10000:
-                    continue
                 provider = state.get("provider")
                 provider_name = next(
                     (
@@ -894,6 +944,17 @@ class ScanManager:
                     continue
                 metadata = state.get("_ui", {})
                 if not isinstance(metadata, dict):
+                    continue
+                prior_verified = metadata.get("prior_verified", [])
+                if not isinstance(prior_verified, list) or any(
+                    not isinstance(name, str)
+                    or normalize_target(name) != name
+                    or not name.endswith("." + target)
+                    for name in prior_verified
+                ):
+                    continue
+                history_enabled = metadata.get("history_enabled", False)
+                if not isinstance(history_enabled, bool):
                     continue
                 created = metadata.get("created_at", path.stat().st_mtime)
                 if (
@@ -916,6 +977,8 @@ class ScanManager:
                     nodes={node["value"]: node for node in state["nodes"]},
                     elapsed=state["elapsed_seconds"],
                     predictor=state.get("predictor"),
+                    prior_verified=tuple(sorted(set(prior_verified))),
+                    history_enabled=history_enabled,
                 )
                 row.patterns = describe_patterns(
                     [node["value"] for node in state["nodes"] if node["status"] == "verified"],

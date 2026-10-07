@@ -139,7 +139,6 @@ def test_protocol_uses_pinned_model_typed_questions_and_official_input_only_pric
         question = payload["questions"][plan["id"]]
         assert question["type"] == "noul"
         assert question["instructions"]["candidate_plan"] == plan
-        assert "only DNS checks establish" in question["instructions"]["question"]
         assert set(question["criteria"]) == {"true", "false"}
     assert KEY.encode() not in options["data"]
     session = transport.sessions[0]
@@ -321,6 +320,21 @@ def test_pause_after_reservation_checkpoint_releases_it_durably(transport):
     assert float(snapshots[0]["reserved_usd"]) > 0
     assert float(snapshots[-1]["reserved_usd"]) == 0
     assert SpendLedger.from_dict(snapshots[-1]).spent_usd == 0
+
+
+def test_open_ended_scan_preserves_request_timeouts_and_pause_budget_guards(transport):
+    ledger = SpendLedger(1, JEV_PRICE)
+    predictor = JevPredictor(KEY)
+    scores = score(predictor, ledger, deadline=None, state={**STATE, "remaining_candidates": None})
+    assert scores == {PLANS[0]["id"]: 0.8, PLANS[1]["id"]: 0.1}
+    assert transport.calls[0][1]["timeout"] == (3.0, 5.0)
+    assert ledger.spent_usd == pytest.approx(300 * 0.042 / 1_000_000)
+    assert ledger.reserved_usd == 0
+    with pytest.raises(ScanPaused):
+        score(predictor, ledger, deadline=None, stop_requested=lambda: True)
+    with pytest.raises(BudgetExhausted):
+        score(predictor, SpendLedger(0, JEV_PRICE), deadline=None)
+    assert len(transport.calls) == 1
 
 
 def test_deadline_before_wire_or_during_checkpoint_prevents_paid_request(transport, monkeypatch):

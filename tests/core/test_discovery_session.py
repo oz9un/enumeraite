@@ -64,6 +64,9 @@ def test_known_first_then_recursive_numeric_middle_and_children():
     assert len(session.validator.calls) == len(set(session.validator.calls))
     assert report["known_verified"] == 1
     assert any("number" in entry["pattern"] for entry in session.report()["patterns"])
+    origin = session.nodes[second]["origin_evidence"]
+    assert known in origin["evidence"]
+    assert origin["numeric_ceiling"] == 3
 
 
 def test_find_counts_verified_not_guesses_and_cannot_overshoot():
@@ -80,7 +83,7 @@ def test_seedless_free_bootstrap_works_when_all_passive_sources_fail():
         "example.test",
         ScanOptions(max_candidates=30),
         FakeDNS(["www.example.test"]),
-        passive_fetch=passive(errors=["CT unavailable", "hostsearch unavailable"]),
+        passive_fetch=passive(errors=["CT unavailable", "MerkleMap unavailable"]),
     )
     result = session.run()
     assert "www.example.test" in result["findings"]
@@ -123,6 +126,38 @@ def test_explicit_seeds_have_priority_with_small_candidate_cap():
         options=ScanOptions(max_candidates=1),
     )
     assert session.run(["manual.example.test"])["findings"] == ["manual.example.test"]
+
+
+def test_passive_admission_preserves_families_with_only_residual_capacity():
+    seeds = ["manual.example.test", "supplied.example.test"]
+    services = [
+        "billing.example.test",
+        "console.example.test",
+        "monitor.example.test",
+        "sso.example.test",
+    ]
+    names = [f"aaa{number:02d}.example.test" for number in range(1, 4)] + services
+    session = make_session(
+        names=names,
+        hits=seeds + services,
+        options=ScanOptions(max_candidates=7),
+    )
+    result = session.run(seeds)
+    assert set(result["findings"]) == set(seeds + services)
+    assert result["attempted"] == len(session.validator.calls) == 7
+    assert result["passive_truncated"]
+
+
+def test_passive_depth_rejection_does_not_consume_residual_slots():
+    session = make_session(
+        names=["aaa.deep.example.test", "billing.example.test", "console.example.test"],
+        hits=["billing.example.test", "console.example.test"],
+        options=ScanOptions(max_candidates=3, max_depth=1),
+    )
+    result = session.run(["manual.example.test"])
+    assert set(result["findings"]) == {"billing.example.test", "console.example.test"}
+    assert "aaa.deep.example.test" not in session.validator.calls
+    assert result["attempted"] == 3
 
 
 def test_seeded_mode_learns_before_bootstrap_can_exhaust_small_candidate_cap():
@@ -182,17 +217,94 @@ def test_resume_does_not_repeat_completed_dns_or_passive_calls():
     assert result["attempted"] == 2
 
 
-def test_resume_retries_inconclusive_once_without_recounting_unique_attempt():
+def test_open_ended_scan_pauses_and_resumes_pending_expansion_without_resets():
+    known = "ny-01-iphone.example.test"
+    paused = [False]
+    proposed = []
+    checkpoints = []
+
+    def pause_during_expansion(kind, payload):
+        if kind == "candidate" and payload["source"] == "pattern":
+            proposed.append(payload["value"])
+            if len(proposed) == 3:
+                paused[0] = True
+
+    options = ScanOptions(max_candidates=0, max_rounds=0, time_limit=0, passive=False, max_depth=1)
+    first = make_session(
+        options=options,
+        hits=[known],
+        event=pause_during_expansion,
+        stop_requested=lambda: paused[0],
+        checkpoint=lambda state: checkpoints.append(copy.deepcopy(state)),
+    )
+    result = first.run([known])
+    assert result["stop_reason"] == "paused; scan saved"
+    assert result["round"] == 1
+    assert first.validator.calls == [known]
+    assert len(proposed) == 3
+    assert all(first.nodes[name]["status"] == "pending" for name in proposed)
+
+    paused[0] = False
+
+    def pause_after_next_wave(kind, payload):
+        if kind == "progress" and payload["round"] > result["round"]:
+            paused[0] = True
+
+    resumed = make_session(
+        options=options,
+        state=checkpoints[-1],
+        stop_requested=lambda: paused[0],
+        event=pause_after_next_wave,
+    )
+    continued = resumed.run()
+    assert continued["stop_reason"] == "paused; scan saved"
+    assert continued["round"] == result["round"] + 1
+    assert continued["findings"] == [known]
+    assert resumed.validator.calls[:3] == proposed
+    assert known not in resumed.validator.calls
+    assert len(set(resumed.validator.calls)) == len(resumed.validator.calls)
+    assert continued["attempted"] == result["attempted"] + len(resumed.validator.calls)
+    validate_checkpoint(resumed.state, "example.test")
+
+
+def test_open_ended_passive_and_bootstrap_work_still_respects_find_goal():
+    now = [0.0]
+    known = "passive.example.test"
+
+    def fetch(*args, timeout, max_results, **kwargs):
+        if timeout <= 0 or max_results <= 0:
+            raise ValueError("passive work needs positive per-request allowances")
+        now[0] = 100_000.0
+        return PassiveResult([known], {"fixture": [known]}, [])
+
+    scan = DiscoverySession(
+        "example.test",
+        ScanOptions(max_candidates=0, max_rounds=0, time_limit=0, find=2),
+        FakeDNS([known, "www.example.test", "mail.example.test"]),
+        passive_fetch=fetch,
+        clock=lambda: now[0],
+    )
+    result = scan.run()
+    assert result["findings"] == [known, "www.example.test"]
+    assert result["stop_reason"] == "verified target reached"
+    assert result["attempted"] == 2
+    assert result["elapsed_seconds"] == 100_000
+    assert scan.nodes[known]["source"] == "passive"
+    assert scan.nodes["www.example.test"]["source"] == "bootstrap"
+    validate_checkpoint(scan.state, "example.test")
+
+
+@pytest.mark.parametrize("max_candidates", [0, 1])
+def test_resume_retries_inconclusive_once_without_recounting_unique_attempt(max_candidates):
     session = DiscoverySession(
         "example.test",
-        ScanOptions(max_candidates=1),
+        ScanOptions(max_candidates=max_candidates, passive=False),
         FakeDNS(errors=["api.example.test"]),
-        passive_fetch=passive(["api.example.test"]),
     )
-    session.run()
+    session.run(["api.example.test"])
     second = DiscoverySession(
         "example.test",
-        ScanOptions(max_candidates=1, find=1),
+        ScanOptions(max_candidates=max_candidates, passive=False, find=1),
         FakeDNS(["api.example.test"]),
         state=copy.deepcopy(session.state),
     )
@@ -298,6 +410,32 @@ def test_resume_with_larger_number_range_revisits_evidence_without_repeating_dns
     assert not prior_names.intersection(second.validator.calls)
     assert result["round"] > previous_round
     validate_checkpoint(second.state, "example.test")
+
+
+def test_legacy_exhausted_parent_resumes_new_ancestor_discovery_without_rechecking():
+    known = "api.blue.service.example.test"
+    ancestor = "blue.service.example.test"
+    first = make_session(
+        hits=[known],
+        options=ScanOptions(passive=False, max_candidates=1),
+    )
+    first.run([known])
+    state = copy.deepcopy(first.state)
+    # The previous traversal exhausted this parent before ancestor proposals existed.
+    state["pattern_paging_version"] = 1
+    state["nodes"][0]["expanded_revision"] = 1
+    validator = FakeDNS([ancestor])
+    resumed = DiscoverySession(
+        "example.test",
+        ScanOptions(passive=False, max_candidates=3),
+        validator,
+        state=state,
+    )
+    result = resumed.run()
+    assert set(result["findings"]) == {known, ancestor}
+    assert known not in validator.calls
+    assert result["attempted"] == 3
+    validate_checkpoint(resumed.state, "example.test")
 
 
 def test_reduced_dns_label_depth_preserves_pending_name_for_later_resume():
@@ -476,9 +614,96 @@ def test_parentless_model_proposals_remain_usable_after_many_shallow_rounds():
     assert node["parent"] is None
     assert node["depth"] == 0
     assert node["round"] == 7
+    assert node["origin_evidence"]["evidence"] == ["api.example.test"]
+    assert node["origin_evidence"]["batch"] == 1
+    assert node["origin_evidence"]["provider"] == "fixture-model"
+    assert node["origin_evidence"]["model"] == "fixture"
+    assert node["origin_evidence"]["confidence"] == 0.8
     assert ledger.calls == 3
     assert ledger.spent_usd > 0
     validate_checkpoint(session.state, "example.test")
+
+
+@pytest.mark.parametrize("initial_cap", [1, 3], ids=["capped-then-resumed", "direct"])
+def test_observed_dns_aliases_are_deduplicated_and_independently_checked(initial_cap):
+    from enumeraite.core.dns_evidence import new_dns_evidence
+    from enumeraite.core.scan_dns import ScanDNSResult
+
+    first, second, absent = [f"{label}.example.test" for label in ("api", "edge", "origin")]
+
+    class AliasDNS(FakeDNS):
+        def validate(self, values, *, deadline):
+            self.calls.extend(values)
+            outcomes = []
+            for value in values:
+                evidence = new_dns_evidence(value)
+                exists = value != absent
+                evidence["records"]["A"] = {
+                    "status": "answered" if exists else "nxdomain",
+                    "addresses": ["192.0.2.1"] if exists else [],
+                    "error": "",
+                }
+                evidence["wildcard"]["status"] = "not_detected" if exists else "not_checked"
+                if value == first:
+                    evidence["aliases"] = [second]
+                elif value == second:
+                    evidence["aliases"] = [first, absent]
+                outcomes.append(
+                    ScanDNSResult(
+                        value,
+                        exists,
+                        ["192.0.2.1"] if exists else [],
+                        0,
+                        dns_evidence=evidence,
+                    )
+                )
+            return outcomes
+
+    validator = AliasDNS()
+    session = DiscoverySession(
+        "example.test", ScanOptions(passive=False, max_candidates=initial_cap), validator
+    )
+    result = session.run([first])
+    if initial_cap == 1:
+        session = DiscoverySession(
+            session.target,
+            ScanOptions(passive=False, max_candidates=3),
+            validator,
+            state=copy.deepcopy(session.state),
+        )
+        result = session.run()
+    assert set(result["findings"]) == {first, second}
+    assert validator.calls == [first, second, absent]
+    assert session.nodes[absent]["status"] == "miss"
+    assert session.nodes[second]["parent"] == first
+    assert session.nodes[second]["source"] == "dns"
+    assert result["attempted"] == 3
+    validate_checkpoint(session.state, session.target)
+
+
+def test_filtered_wildcard_cannot_seed_observed_alias_discovery():
+    from enumeraite.core.dns_evidence import new_dns_evidence
+    from enumeraite.core.scan_dns import ScanDNSResult
+
+    name, alias = "api.example.test", "edge.example.test"
+
+    class WildcardAliasDNS(FakeDNS):
+        def validate(self, values, *, deadline):
+            self.calls.extend(values)
+            evidence = new_dns_evidence(name)
+            evidence["aliases"] = [alias]
+            evidence["wildcard"]["status"] = "matched"
+            return [
+                ScanDNSResult(name, False, ["192.0.2.1"], 0, wildcard=True, dns_evidence=evidence)
+            ]
+
+    validator = WildcardAliasDNS()
+    session = DiscoverySession(
+        "example.test", ScanOptions(passive=False, max_candidates=10), validator
+    )
+    assert session.run([name])["findings"] == []
+    assert validator.calls == [name]
+    assert alias not in session.nodes
 
 
 def test_deadline_stops_before_dns_and_checkpoint_survives():
@@ -527,7 +752,10 @@ def test_keyboard_interrupt_saves_pending_candidates_for_resume():
         ("max_candidates", True),
         ("workers", 0),
         ("rate", float("nan")),
-        ("time_limit", 0),
+        ("time_limit", -1),
+        ("time_limit", float("inf")),
+        ("max_candidates", -1),
+        ("max_rounds", -1),
         ("find", 1.5),
         ("max_depth", 0),
         ("passive", "yes"),
@@ -549,6 +777,8 @@ def test_invalid_limits_rejected(field, value):
         lambda state: state.update(attempted=100),
         lambda state: state["nodes"][0].update(value="outside.test"),
         lambda state: state["nodes"][0].update(parent=state["nodes"][0]["value"]),
+        lambda state: state["nodes"][0].update(depth=11),
+        lambda state: state["nodes"][0].update(attempts=3),
     ],
 )
 def test_corrupt_checkpoints_rejected(mutation):
@@ -558,3 +788,125 @@ def test_corrupt_checkpoints_rejected(mutation):
     mutation(state)
     with pytest.raises(ValueError):
         validate_checkpoint(state, "example.test")
+
+
+def test_public_records_corroborate_seed_without_becoming_current_dns(tmp_path):
+    from enumeraite.core.origin_evidence import passive_collectors
+    from enumeraite.core.scan_state import ScanStore
+
+    name = "podcast.example.test"
+    records = [
+        {
+            "source": "crt.sh",
+            "collected_at": "2026-10-03T12:00:00+00:00",
+            "query": "%.example.test",
+            "matched_name": "*.PODCAST.example.test",
+            "certificate_id": "12345",
+            "issuer": "Fixture issuer",
+            "not_before": "2025-01-01T00:00:00",
+        },
+        {
+            "source": "merklemap",
+            "collected_at": "2026-10-03T12:00:01+00:00",
+            "query": "*.example.test",
+            "matched_name": name,
+            "subject_common_name": "*.example.test",
+            "first_seen": "2025-02-01T00:00:00+00:00",
+        },
+        {
+            "source": "subfinder",
+            "collected_at": "2026-10-03T12:00:02+00:00",
+            "query": "example.test",
+            "matched_name": name,
+        },
+    ]
+    result = PassiveResult(
+        [name],
+        {"crt.sh": [name], "merklemap": [name], "subfinder": [name]},
+        [],
+        evidence={name: records},
+    )
+    store = ScanStore(tmp_path / "scan.json")
+    scan = DiscoverySession(
+        "example.test",
+        ScanOptions(max_candidates=1),
+        FakeDNS([name]),
+        passive_fetch=lambda *args, **kwargs: result,
+        checkpoint=store.save,
+    )
+    scan.run([name])
+    node = scan.report()["nodes"][0]
+    assert node["source"] == "seed"
+    assert node["addresses"] == ["192.0.2.1"]
+    assert node["origin_evidence"]["passive"] == records
+    original_queue_time = node["origin_evidence"]["queued_at"]
+    restored = DiscoverySession(
+        scan.target,
+        scan.options,
+        FakeDNS(),
+        state=store.load(),
+        passive_fetch=lambda *args, **kwargs: pytest.fail("Passive source unexpectedly re-fetched"),
+    )
+    restored.run()
+    assert not restored.validator.calls
+    assert restored.nodes[name]["origin_evidence"]["queued_at"] == original_queue_time
+    assert restored.nodes[name]["origin_evidence"]["passive"] == records
+
+    # Old checkpoints still expose exact membership, never invented records or times.
+    legacy = store.load()
+    del legacy["nodes"][0]["origin_evidence"]
+    older = DiscoverySession(scan.target, scan.options, FakeDNS(), state=legacy)
+    older.run()
+    assert "origin_evidence" not in older.nodes[name]
+    assert passive_collectors(older.nodes[name], older.state["passive_sources"]) == [
+        "crt.sh",
+        "merklemap",
+        "subfinder",
+    ]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        {"evidence": ["outside.test"]},
+        {"confidence": float("nan")},
+        {"queued_at": "2026-10-03T12:00:00-05:00"},
+        {
+            "passive": [
+                {
+                    "source": "crt.sh",
+                    "query": "%.example.test",
+                    "collected_at": "2026-10-03T12:00:00Z",
+                    "matched_name": "other.example.test",
+                }
+            ]
+        },
+        {
+            "passive": [
+                {
+                    "source": "crt.sh",
+                    "query": "%.outside.test",
+                    "collected_at": "2026-10-03T12:00:00Z",
+                    "matched_name": "api.example.test",
+                }
+            ]
+        },
+        {
+            "passive": [
+                {
+                    "source": "merklemap",
+                    "query": "*.outside.test",
+                    "collected_at": "2026-10-03T12:00:00Z",
+                    "matched_name": "api.example.test",
+                }
+            ]
+        },
+    ],
+)
+def test_resume_rejects_misattributed_or_invalid_origin_evidence(origin):
+    scan = make_session(options=ScanOptions(max_candidates=1))
+    scan._enqueue("api.example.test", source="seed")
+    scan.nodes["api.example.test"]["origin_evidence"] = origin
+    scan.save()
+    with pytest.raises(ValueError):
+        validate_checkpoint(scan.state, scan.target)
