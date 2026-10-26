@@ -78,7 +78,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
     if os.getenv("OPENAI_API_KEY"):
         config_dict.setdefault("providers", {})["openai"] = {
             "api_key": os.getenv("OPENAI_API_KEY"),
-            "model": os.getenv("OPENAI_MODEL", "gpt-4")
+            "model": os.getenv("OPENAI_MODEL", "gpt-5.6-sol")
         }
 
     # Anthropic/Claude configuration
@@ -114,7 +114,7 @@ def create_default_config(output_path: str = "enumeraite.json") -> None:
         "providers": {
             "openai": {
                 "api_key": "your-openai-api-key-here",
-                "model": "gpt-4"
+                "model": "gpt-5.6-sol"
             },
             "claude": {
                 "api_key": "your-anthropic-api-key-here",

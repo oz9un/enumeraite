@@ -13,7 +13,7 @@ class OpenAIProvider(BaseProvider):
         """Initialize OpenAI provider with API configuration."""
         super().__init__(config)
         self.client = openai.OpenAI(api_key=config.get("api_key"))
-        self.model = config.get("model", "gpt-4")
+        self.model = config.get("model", "gpt-5.6-sol")
 
     def generate_paths(self, known_paths: List[str], target: str, count: int, max_depth: int = None, strategy: PromptStrategy = None) -> GenerationResult:
         """Generate new API paths using OpenAI's language model."""
@@ -29,8 +29,7 @@ class OpenAIProvider(BaseProvider):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.7,
-            max_tokens=2000
+            max_completion_tokens=8000
         )
 
         content = response.choices[0].message.content
@@ -81,8 +80,7 @@ class OpenAIProvider(BaseProvider):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.7,
-            max_tokens=4000  # Higher limit for analysis tasks
+            max_completion_tokens=16000  # Higher limit for analysis tasks
         )
 
         return response.choices[0].message.content
